@@ -44,12 +44,12 @@ def main(url, timeout, verify_ssl, user_agent, silent):
             print(f"\n[Directory List]\n" + "-"*len(path_url) + f"\n{path_url}\n" + "-"*len(path_url))
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='Verifica listagem de diretório em URLs.')
-    parser.add_argument('-u', '--url', type=str, required=True, help='URL para verificar')
-    parser.add_argument('-to', '--timeout', type=int, default=10, help='Timeout para requisições HTTP (em segundos)')
-    parser.add_argument('-nvs', '--no-verify-ssl', action='store_false', help='Desabilita verificação de SSL')
-    parser.add_argument('-ua', '--user-agent', type=str, default='YourDefaultUserAgent', help='Define o User-Agent para as requisições HTTP')
-    parser.add_argument('-s', '--silent', action='store_true', help='Executa em modo silencioso')
+    parser = argparse.ArgumentParser(description='Check the directory list in URLs.')
+    parser.add_argument('-u', '--url', type=str, required=True, help='URL to check')
+    parser.add_argument('-to', '--timeout', type=int, default=10, help='Timeout for HTTP requirements (in seconds)')
+    parser.add_argument('-nvs', '--no-verify-ssl', action='store_false', help='Disable SSL verification')
+    parser.add_argument('-ua', '--user-agent', type=str, default='YourDefaultUserAgent', help='Define the User-Agent for HTTP requirements')
+    parser.add_argument('-s', '--silent', action='store_true', help='Run in silent mode')
     args = parser.parse_args()
 
     banner()
