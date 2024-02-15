@@ -69,9 +69,10 @@ def print_response_details(url, response, verbose, is_listing):
                 print("[Directory Listing]: No")
        
 
-def check_directory_listing(url, session, verify_ssl, verbose):
+def check_directory_listing(url, session, verify_ssl, verbose, timeout):
     try:
-        response = session.get(url, verify=verify_ssl)
+        # Adiciona o timeout à chamada get
+        response = session.get(url, verify=verify_ssl, timeout=timeout)
         is_listing = is_directory_listing(response)
         # Sempre imprime se encontrar uma listagem de diretórios, independentemente do modo verboso
         print_response_details(url, response, verbose, is_listing)  
@@ -81,6 +82,7 @@ def check_directory_listing(url, session, verify_ssl, verbose):
         if verbose:
             print(f"Error accessing {url}: {e}")
     return False
+
 
 def main(url, timeout, verify_ssl, user_agent, silent, verbose):
     session = requests.Session()
@@ -99,21 +101,32 @@ def main(url, timeout, verify_ssl, user_agent, silent, verbose):
         parsed_url = urlparse(url)
         base_url = urlunparse(parsed_url._replace(query=""))
         
-        check_directory_listing(url, session, verify_ssl, verbose)
+        # Inicializa modified_url com a URL original para evitar UnboundLocalError
+        modified_url = url  # Inicializa com a própria URL
 
-        if '.' in parsed_url.path.split('/')[-1]:
-            check_directory_listing(base_url, session, verify_ssl, verbose)
-        
+        # Tentar primeiro com a barra no final, se aplicável
+        if '.' in parsed_url.path.split('/')[-1]:  # Verifica se parece com um arquivo
+            modified_url = url if url.endswith('/') else url + '/'
+            # Tenta a URL modificada primeiro
+            listing_found = check_directory_listing(modified_url, session, verify_ssl, verbose, timeout)
+            if not listing_found or modified_url == url:  # Se não encontrou ou se a URL já terminava com '/', tenta a original
+                check_directory_listing(url, session, verify_ssl, verbose, timeout)
+        else:
+            # Se a URL não parece com um arquivo, procede normalmente
+            check_directory_listing(url, session, verify_ssl, verbose, timeout)
+
+        # Continuação da lógica para verificar diretórios superiores
         path_parts = parsed_url.path.strip('/').split('/')
         base_url = f"{parsed_url.scheme}://{parsed_url.netloc}"
         
         for i in range(len(path_parts), -1, -1):
             test_url = urljoin(base_url, '/'.join(path_parts[:i]) + '/')
-            if test_url != url:  # Evita testar a mesma URL duas vezes
-                check_directory_listing(test_url, session, verify_ssl, verbose)
+            if test_url not in [url, modified_url, base_url]:  # Evita testar a mesma URL mais de uma vez
+                check_directory_listing(test_url, session, verify_ssl, verbose, timeout)
     finally:
         if not verbose:
             spinner.stop()
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Check directories for listings.")
