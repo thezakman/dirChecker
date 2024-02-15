@@ -16,11 +16,14 @@ options:
 
   -h, --help            show this help message and exit
   -u URL, --url URL     URL to check
-  --timeout TIMEOUT     Request timeout in seconds
-  --verify-ssl          Verify SSL certificates
-  --user-agent USER_AGENT
+  -to TIMEOUT, --timeout TIMEOUT
+                        Request timeout in seconds
+  -vs, --verify-ssl     Verify SSL certificates
+  -ua USER_AGENT, --user-agent USER_AGENT
                         Custom User-Agent
-  --silent              Suppress banner and other output
+  -H HEADERS, --headers HEADERS
+                        Custom headers to use in the request, formatted as 'Header1:Value1,Header2:Value2'
+  -S, --silent          Suppress banner and other output
   -v, --verbose         Enable verbose output
-    
+
 ```
