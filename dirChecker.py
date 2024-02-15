@@ -98,34 +98,32 @@ def main(url, timeout, verify_ssl, user_agent, silent, verbose):
         spinner.start()
 
     try:
+        # Verifica a URL fornecida diretamente, sem alterações
+        check_directory_listing(url, session, verify_ssl, verbose, timeout)
+
+        # Extrai os componentes da URL para verificar diretórios superiores
         parsed_url = urlparse(url)
-        base_url = urlunparse(parsed_url._replace(query=""))
-        
-        # Inicializa modified_url com a URL original para evitar UnboundLocalError
-        modified_url = url  # Inicializa com a própria URL
-
-        # Tentar primeiro com a barra no final, se aplicável
-        if '.' in parsed_url.path.split('/')[-1]:  # Verifica se parece com um arquivo
-            modified_url = url if url.endswith('/') else url + '/'
-            # Tenta a URL modificada primeiro
-            listing_found = check_directory_listing(modified_url, session, verify_ssl, verbose, timeout)
-            if not listing_found or modified_url == url:  # Se não encontrou ou se a URL já terminava com '/', tenta a original
-                check_directory_listing(url, session, verify_ssl, verbose, timeout)
-        else:
-            # Se a URL não parece com um arquivo, procede normalmente
-            check_directory_listing(url, session, verify_ssl, verbose, timeout)
-
-        # Continuação da lógica para verificar diretórios superiores
         path_parts = parsed_url.path.strip('/').split('/')
-        base_url = f"{parsed_url.scheme}://{parsed_url.netloc}"
-        
-        for i in range(len(path_parts), -1, -1):
+        base_url = f"{parsed_url.scheme}://{parsed_url.netloc}/"
+
+        # Se a URL aponta para um arquivo (tem um ponto no último segmento), ajusta o índice para não incluir o arquivo na verificação dos diretórios superiores
+        start_index = len(path_parts) - (1 if '.' in path_parts[-1] else 0)
+
+        for i in range(start_index, 0, -1):
+            # Constrói a URL de teste para cada diretório superior
             test_url = urljoin(base_url, '/'.join(path_parts[:i]) + '/')
-            if test_url not in [url, modified_url, base_url]:  # Evita testar a mesma URL mais de uma vez
+            if test_url not in [url]:  # Evita testar a mesma URL fornecida
                 check_directory_listing(test_url, session, verify_ssl, verbose, timeout)
+
+        # Adicionalmente, verifica a raiz do domínio se ainda não foi feito
+        if base_url not in [url]:
+            check_directory_listing(base_url, session, verify_ssl, verbose, timeout)
+
     finally:
         if not verbose:
             spinner.stop()
+
+
 
 
 if __name__ == "__main__":
