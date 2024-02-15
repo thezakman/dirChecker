@@ -2,6 +2,8 @@
 
 import requests
 import argparse
+import random
+from halo import Halo
 from urllib.parse import urljoin, urlparse, urlunparse
 from requests.packages.urllib3.exceptions import InsecureRequestWarning
 
@@ -9,23 +11,52 @@ from requests.packages.urllib3.exceptions import InsecureRequestWarning
 requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
 
 def banner():
-    title = '''
+
+    print('''
      _ _       ___ _               _   @thezakman          
   __| (_)_ __ / __\ |__   ___  ___| | _____ _ __ 
  / _` | | '__/ /  | '_ \ / _ \/ __| |/ / _ \ '__|
 | (_| | | | / /___| | | |  __/ (__|   <  __/ |   
- \__,_|_|_| \____/|_| |_|\___|\___|_|\_\___|_| v1.2  
+ \__,_|_|_| \____/|_| |_|\___|\___|_|\_\___|_| v1.3  
             - why checking manually?
-'''
-    print(title)
+''')
+    
+
+spinner_styles = [
+    'dots', 'dots2', 'dots3', 'dots4', 'dots5', 'dots6', 'dots7', 'dots8', 'dots9', 'dots10',
+    'dots11', 'dots12', 'line', 'line2', 'pipe', 'simpleDots', 'simpleDotsScrolling', 'star', 
+    'star2', 'flip', 'hamburger', 'growVertical', 'growHorizontal', 'balloon', 'balloon2', 
+    'noise', 'bounce', 'boxBounce', 'boxBounce2', 'triangle', 'arc', 'circle', 'squareCorners', 
+    'circleQuarters', 'circleHalves', 'squish', 'toggle', 'toggle2', 'toggle3', 'toggle4', 
+    'toggle5', 'toggle6', 'toggle7', 'toggle8', 'toggle9', 'toggle10', 'toggle11'
+]
 
 def is_directory_listing(response):
-    if "<ListBucketResult" in response.text or "Index of" in response.text:
+    # Lista de padrões para verificar na resposta
+    patterns = [
+        "<ListBucketResult",      # S3 Buckets
+        "Index of",               # Apache
+        "Parent Directory",       # IIS
+        "Directory Listing For",  # Vários servidores
+        "<title>Index of"         # Alguns servidores configurados para mostrar o título "Index of" na listagem
+    ]
+    
+    # Verifica cada padrão na resposta
+    for pattern in patterns:
+        if pattern in response.text:
+            return True
+    
+    # Verificar por uma quantidade significativa de links, sugerindo uma listagem de diretório (NGINX e outros)
+    # Isso é um pouco mais genérico e pode gerar falsos positivos, então use com cautela
+    if response.text.count('<a href=') > 5:  # Exemplo de threshold, ajuste conforme necessário
         return True
+
     return False
+
 
 def print_response_details(url, response, verbose, is_listing):
     if verbose or is_listing:
+        print('\n')
         print(f"[Testing]: {url}")
         if verbose:
             print(f"[Status Code]: {response.status_code}")
@@ -36,7 +67,7 @@ def print_response_details(url, response, verbose, is_listing):
         else:
             if verbose:
                 print("[Directory Listing]: No")
-        print("\n")
+       
 
 def check_directory_listing(url, session, verify_ssl, verbose):
     try:
@@ -58,21 +89,31 @@ def main(url, timeout, verify_ssl, user_agent, silent, verbose):
     if not silent:
         banner()
 
-    parsed_url = urlparse(url)
-    base_url = urlunparse(parsed_url._replace(query=""))
+    selected_spinner = random.choice(spinner_styles)
+    spinner = Halo(text='[>] Running...', spinner=selected_spinner)
     
-    check_directory_listing(url, session, verify_ssl, verbose)
+    if not verbose:
+        spinner.start()
 
-    if '.' in parsed_url.path.split('/')[-1]:
-        check_directory_listing(base_url, session, verify_ssl, verbose)
-    
-    path_parts = parsed_url.path.strip('/').split('/')
-    base_url = f"{parsed_url.scheme}://{parsed_url.netloc}"
-    
-    for i in range(len(path_parts), -1, -1):
-        test_url = urljoin(base_url, '/'.join(path_parts[:i]) + '/')
-        if test_url != url:  # Evita testar a mesma URL duas vezes
-            check_directory_listing(test_url, session, verify_ssl, verbose)
+    try:
+        parsed_url = urlparse(url)
+        base_url = urlunparse(parsed_url._replace(query=""))
+        
+        check_directory_listing(url, session, verify_ssl, verbose)
+
+        if '.' in parsed_url.path.split('/')[-1]:
+            check_directory_listing(base_url, session, verify_ssl, verbose)
+        
+        path_parts = parsed_url.path.strip('/').split('/')
+        base_url = f"{parsed_url.scheme}://{parsed_url.netloc}"
+        
+        for i in range(len(path_parts), -1, -1):
+            test_url = urljoin(base_url, '/'.join(path_parts[:i]) + '/')
+            if test_url != url:  # Evita testar a mesma URL duas vezes
+                check_directory_listing(test_url, session, verify_ssl, verbose)
+    finally:
+        if not verbose:
+            spinner.stop()
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Check directories for listings.")
