@@ -11,32 +11,25 @@ from requests.packages.urllib3.exceptions import InsecureRequestWarning
 requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
 
 def banner():
-    
     print('''
-     _ _       ___ _               _   @thezakman          
-  __| (_)_ __ / __\ |__   ___  ___| | _____ _ __ 
+     _ _       ___ _               _   @thezakman
+  __| (_)_ __ / __\ |__   ___  ___| | _____ _ __
  / _` | | '__/ /  | '_ \ / _ \/ __| |/ / _ \ '__|
-| (_| | | | / /___| | | |  __/ (__|   <  __/ |   
- \__,_|_|_| \____/|_| |_|\___|\___|_|\_\___|_| v1.3  
+| (_| | | | / /___| | | |  __/ (__|   <  __/ |
+ \__,_|_|_| \____/|_| |_|\___|\___|_|\_\___|_| v1.3
             - why checking manually?
 ''')
 
-# Define available spinner styles for the loading indicator
 spinner_styles = [
-    # List of spinner styles for visual feedback during execution
     'dots', 'dots2', 'dots3', 'dots4', 'dots5', 'dots6', 'dots7', 'dots8', 'dots9', 'dots10',
-    'dots11', 'dots12', 'line', 'line2', 'pipe', 'simpleDots', 'simpleDotsScrolling', 'star', 
-    'star2', 'flip', 'hamburger', 'growVertical', 'growHorizontal', 'balloon', 'balloon2', 
-    'noise', 'bounce', 'boxBounce', 'boxBounce2', 'triangle', 'arc', 'circle', 'squareCorners', 
-    'circleQuarters', 'circleHalves', 'squish', 'toggle', 'toggle2', 'toggle3', 'toggle4', 
+    'dots11', 'dots12', 'line', 'line2', 'pipe', 'simpleDots', 'simpleDotsScrolling', 'star',
+    'star2', 'flip', 'hamburger', 'growVertical', 'growHorizontal', 'balloon', 'balloon2',
+    'noise', 'bounce', 'boxBounce', 'boxBounce2', 'triangle', 'arc', 'circle', 'squareCorners',
+    'circleQuarters', 'circleHalves', 'squish', 'toggle', 'toggle2', 'toggle3', 'toggle4',
     'toggle5', 'toggle6', 'toggle7', 'toggle8', 'toggle9', 'toggle10', 'toggle11'
 ]
 
 def parse_custom_headers(header_string):
-    """
-    Convert a custom header string to a dictionary.
-    Assumes headers are passed as 'Key:Value' pairs separated by commas.
-    """
     headers = {}
     if header_string:
         header_pairs = header_string.split(',')
@@ -46,31 +39,23 @@ def parse_custom_headers(header_string):
     return headers
 
 def is_directory_listing(response):
-    """
-    Check if the response contains patterns indicative of a directory listing.
-    """
     patterns = [
-        "<ListBucketResult",      # S3 Buckets
-        "Index of",               # Apache
-        "Parent Directory",       # IIS
-        "Directory Listing For",  # Various servers
-        "<title>Index of"         # Some servers configured to show "Index of" in the title for listings
+        "<ListBucketResult",
+        "Index of",
+        "Parent Directory",
+        "Directory Listing For",
+        "<title>Index of"
     ]
     
     for pattern in patterns:
         if pattern in response.text:
             return True
-    
-    # Check for a significant number of links, suggesting a directory listing
-    if response.text.count('<a href=') > 5:  # Example threshold, adjust as necessary
+    if response.text.count('<a href=') > 5:
         return True
 
     return False
 
 def print_response_details(url, response, verbose, is_listing):
-    """
-    Print details of the response, controlled by verbose and is_listing flags.
-    """
     if verbose or is_listing:
         print('\n[Testing]:', url)
         if verbose:
@@ -85,25 +70,29 @@ def print_response_details(url, response, verbose, is_listing):
             if verbose:
                 print("[Directory Listing]: No")
 
-def check_directory_listing(url, session, verify_ssl, verbose, timeout):
+def check_directory_listing(url, session, verify_ssl, verbose, timeout, spinner):
     """
-    Check a given URL for directory listings and print details based on flags.
+    Adiciona um parâmetro spinner para controlar seu estado de dentro desta função.
     """
     try:
         response = session.get(url, verify=verify_ssl, timeout=timeout)
         is_listing = is_directory_listing(response)
+
+        spinner.stop()  # Para o spinner antes de imprimir os detalhes
         print_response_details(url, response, verbose, is_listing)
+
+        spinner.start()  # Reinicia o spinner após imprimir os detalhes, se necessário
+
         if response.status_code == 200 and is_listing:
             return True
     except requests.RequestException as e:
+        spinner.stop()  # Também para o spinner em caso de exceção antes de imprimir
         if verbose:
             print(f"Error accessing {url}: {e}")
+        spinner.start()
     return False
 
 def main(url, timeout, verify_ssl, user_agent, silent, verbose, custom_headers):
-    """
-    Main function to check the provided URL and its parent directories for listings.
-    """
     session = requests.Session()
     session.headers.update({'User-Agent': user_agent})
     if custom_headers:
@@ -114,12 +103,11 @@ def main(url, timeout, verify_ssl, user_agent, silent, verbose, custom_headers):
 
     selected_spinner = random.choice(spinner_styles)
     spinner = Halo(text='[>] Running...', spinner=selected_spinner)
-    
-    if not verbose:
-        spinner.start()
+    spinner.start()
 
     try:
-        check_directory_listing(url, session, verify_ssl, verbose, timeout)
+        # Passa o spinner como argumento para a função check_directory_listing
+        check_directory_listing(url, session, verify_ssl, verbose, timeout, spinner)
 
         parsed_url = urlparse(url)
         path_parts = parsed_url.path.strip('/').split('/')
@@ -130,17 +118,15 @@ def main(url, timeout, verify_ssl, user_agent, silent, verbose, custom_headers):
         for i in range(start_index, 0, -1):
             test_url = urljoin(base_url, '/'.join(path_parts[:i]) + '/')
             if test_url not in [url]:
-                check_directory_listing(test_url, session, verify_ssl, verbose, timeout)
+                check_directory_listing(test_url, session, verify_ssl, verbose, timeout, spinner)
 
         if base_url not in [url]:
-            check_directory_listing(base_url, session, verify_ssl, verbose, timeout)
+            check_directory_listing(base_url, session, verify_ssl, verbose, timeout, spinner)
 
     finally:
-        if not verbose:
-            spinner.stop()
+        spinner.stop()
 
 if __name__ == "__main__":
-    # Parse command line arguments
     parser = argparse.ArgumentParser(description="Check directories for listings.")
     parser.add_argument('-u', '--url', type=str, required=True, help='URL to check')
     parser.add_argument("-to","--timeout", type=int, default=10, help="Request timeout in seconds")
@@ -149,9 +135,7 @@ if __name__ == "__main__":
     parser.add_argument("-H","--headers", type=str, help="Custom headers to use in the request, formatted as 'Header1:Value1,Header2:Value2'")
     parser.add_argument("-S","--silent", action='store_true', help="Suppress banner and other output")
     parser.add_argument("-v", "--verbose", action='store_true', help="Enable verbose output")
-    
-    args = parser.parse_args()
 
-    # Check if headers are provided and then parse them
+    args = parser.parse_args()
     custom_headers = parse_custom_headers(args.headers) if args.headers else {}
     main(args.url, args.timeout, args.verify_ssl, args.user_agent, args.silent, args.verbose, custom_headers)
