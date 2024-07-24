@@ -1,8 +1,9 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python3.11
 
 import requests
 import argparse
 import random
+import time
 from halo import Halo
 from urllib.parse import urlparse, urljoin
 from requests.packages.urllib3.exceptions import InsecureRequestWarning
@@ -10,13 +11,16 @@ from requests.packages.urllib3.exceptions import InsecureRequestWarning
 # Suppress InsecureRequestWarning for SSL connections
 requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
 
+# version control
+version = "1.6"
+
 def banner():
-    print('''
+    print(f'''
      _ _       ___ _               _   @thezakman
   __| (_)_ __ / __\ |__   ___  ___| | _____ _ __
  / _` | | '__/ /  | '_ \ / _ \/ __| |/ / _ \ '__|
 | (_| | | | / /___| | | |  __/ (__|   <  __/ |
- \__,_|_|_| \____/|_| |_|\___|\___|_|\_\___|_| v1.3
+ \__,_|_|_| \____/|_| |_|\___|\___|_|\_\___|_| v{version}
             - why checking manually?
 ''')
 
@@ -55,44 +59,51 @@ def is_directory_listing(response):
 
     return False
 
-def print_response_details(url, response, verbose, is_listing):
-    if verbose or is_listing:
-        print('\n[Testing]:', url)
-        if verbose:
-            print(f"[Status Code]: {response.status_code}")
-            if custom_headers:
-                print(f"[Headers]: {custom_headers}")
-            print(f"[Content-Length]: {response.headers.get('Content-Length', 'Unknown')}")
-            print(f"[Content-Type]: {response.headers.get('Content-Type', 'Unknown')}")
-        if is_listing:
-            print("[Directory Listing]: Yes")
-        else:
-            if verbose:
-                print("[Directory Listing]: No")
+def print_response_details(url, response, verbose, is_listing, silent, elapsed_time, preview):
+    if silent and response.status_code != 200:
+        return
 
-def check_directory_listing(url, session, verify_ssl, verbose, timeout, spinner):
-    """
-    Adiciona um parâmetro spinner para controlar seu estado de dentro desta função.
-    """
+    print('\n[Testing]:', url)
+    if is_listing:
+        print("[Directory Listing]: (ENABLED)")
+    else:
+        print("[Directory Listing]: (DISABLED)")
+
+    print(f"[Status Code]: {response.status_code}")
+    print(f"[Content-Length]: {response.headers.get('Content-Length', 'Unknown')}")
+    print(f"[Content-Type]: {response.headers.get('Content-Type', 'Unknown')}")
+    if verbose:
+        #print(f"[Headers]: {response.headers}")
+        print(f"[Elapsed Time]: {elapsed_time:.2f} seconds")
+        
+        if response.history:
+            print("[Redirects]:")
+            for resp in response.history:
+                print(f"  [Status Code]: {resp.status_code} [URL]: {resp.url}")
+    if preview:
+            print(f"_________________________\n[Body (first 200 chars)]: {response.text[:200]}")
+
+def check_directory_listing(url, session, verify_ssl, verbose, timeout, spinner, silent, preview):
     try:
+        start_time = time.time()
         response = session.get(url, verify=verify_ssl, timeout=timeout)
+        elapsed_time = time.time() - start_time
         is_listing = is_directory_listing(response)
 
-        spinner.stop()  # Para o spinner antes de imprimir os detalhes
-        print_response_details(url, response, verbose, is_listing)
-
-        spinner.start()  # Reinicia o spinner após imprimir os detalhes, se necessário
+        spinner.stop()
+        print_response_details(url, response, verbose, is_listing, silent, elapsed_time, preview)
+        spinner.start()
 
         if response.status_code == 200 and is_listing:
             return True
     except requests.RequestException as e:
-        spinner.stop()  # Também para o spinner em caso de exceção antes de imprimir
+        spinner.stop()
         if verbose:
             print(f"Error accessing {url}: {e}")
         spinner.start()
     return False
 
-def main(url, timeout, verify_ssl, user_agent, silent, verbose, custom_headers):
+def main(urls, timeout, verify_ssl, user_agent, silent, verbose, custom_headers, preview):
     session = requests.Session()
     session.headers.update({'User-Agent': user_agent})
     if custom_headers:
@@ -106,36 +117,51 @@ def main(url, timeout, verify_ssl, user_agent, silent, verbose, custom_headers):
     spinner.start()
 
     try:
-        # Passa o spinner como argumento para a função check_directory_listing
-        check_directory_listing(url, session, verify_ssl, verbose, timeout, spinner)
+        for url in urls:
+            check_directory_listing(url, session, verify_ssl, verbose, timeout, spinner, silent, preview)
 
-        parsed_url = urlparse(url)
-        path_parts = parsed_url.path.strip('/').split('/')
-        base_url = f"{parsed_url.scheme}://{parsed_url.netloc}/"
+            parsed_url = urlparse(url)
+            path_parts = parsed_url.path.strip('/').split('/')
+            base_url = f"{parsed_url.scheme}://{parsed_url.netloc}/"
 
-        start_index = len(path_parts) - (1 if '.' in path_parts[-1] else 0)
+            start_index = len(path_parts) - (1 if '.' in path_parts[-1] else 0)
 
-        for i in range(start_index, 0, -1):
-            test_url = urljoin(base_url, '/'.join(path_parts[:i]) + '/')
-            if test_url not in [url]:
-                check_directory_listing(test_url, session, verify_ssl, verbose, timeout, spinner)
+            for i in range(start_index, 0, -1):
+                test_url = urljoin(base_url, '/'.join(path_parts[:i]) + '/')
+                if test_url not in urls:
+                    check_directory_listing(test_url, session, verify_ssl, verbose, timeout, spinner, silent, preview)
 
-        if base_url not in [url]:
-            check_directory_listing(base_url, session, verify_ssl, verbose, timeout, spinner)
+            if base_url not in urls:
+                check_directory_listing(base_url, session, verify_ssl, verbose, timeout, spinner, silent, preview)
 
     finally:
         spinner.stop()
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Check directories for listings.")
-    parser.add_argument('-u', '--url', type=str, required=True, help='URL to check')
-    parser.add_argument("-to","--timeout", type=int, default=10, help="Request timeout in seconds")
-    parser.add_argument("-vs","--verify-ssl", action='store_true', help="Verify SSL certificates")
-    parser.add_argument("-ua","--user-agent", default="dirChecker/1.3", help="Custom User-Agent")
-    parser.add_argument("-H","--headers", type=str, help="Custom headers to use in the request, formatted as 'Header1:Value1,Header2:Value2'")
-    parser.add_argument("-S","--silent", action='store_true', help="Suppress banner and other output")
+    parser.add_argument('url', nargs='?', help='URL to check')
+    parser.add_argument('-u', '--url-flag', type=str, help='URL to check (alternative to positional URL)')
+    parser.add_argument('-l', '--list', type=str, help='File containing list of URLs to check')
+    parser.add_argument("-to", "--timeout", type=int, default=10, help="Request timeout in seconds")
+    parser.add_argument("-vs", "--verify-ssl", action='store_true', help="Verify SSL certificates")
+    parser.add_argument("-ua", "--user-agent", default="dirChecker/1.3", help="Custom User-Agent")
+    parser.add_argument("-H", "--headers", type=str, help="Custom headers to use in the request, formatted as 'Header1:Value1,Header2:Value2'")
+    parser.add_argument("-S", "--silent", action='store_true', help="Suppress non-200 output")
     parser.add_argument("-v", "--verbose", action='store_true', help="Enable verbose output")
+    parser.add_argument("-p", "--preview", action='store_true', help="Show first 200 characters of the response body")
 
     args = parser.parse_args()
     custom_headers = parse_custom_headers(args.headers) if args.headers else {}
-    main(args.url, args.timeout, args.verify_ssl, args.user_agent, args.silent, args.verbose, custom_headers)
+    urls = []
+
+    if args.url:
+        urls.append(args.url)
+    elif args.url_flag:
+        urls.append(args.url_flag)
+    elif args.list:
+        with open(args.list, 'r') as f:
+            urls = [line.strip() for line in f.readlines()]
+    else:
+        parser.error("No URL provided. Use positional argument, -u/--url or -l/--list")
+
+    main(urls, args.timeout, args.verify_ssl, args.user_agent, args.silent, args.verbose, custom_headers, args.preview)
