@@ -65,23 +65,24 @@ def print_response_details(url, response, verbose, is_listing, silent, elapsed_t
 
     print('\n[Testing]:', url)
     if is_listing:
-        print("[Directory Listing]: (ENABLED)")
+        print("[Directory Listing]: (VULNERABLE)")
     else:
         print("[Directory Listing]: (DISABLED)")
 
-    print(f"[Status Code]: {response.status_code}")
-    print(f"[Content-Length]: {response.headers.get('Content-Length', 'Unknown')}")
     print(f"[Content-Type]: {response.headers.get('Content-Type', 'Unknown')}")
+    print(f"[Status Code]: {response.status_code}")
     if verbose:
         #print(f"[Headers]: {response.headers}")
+        print(f"[Content-Length]: {response.headers.get('Content-Length', 'Unknown')}")
         print(f"[Elapsed Time]: {elapsed_time:.2f} seconds")
+
         
         if response.history:
             print("[Redirects]:")
             for resp in response.history:
                 print(f"  [Status Code]: {resp.status_code} [URL]: {resp.url}")
     if preview:
-            print(f"_________________________\n[Body (first 200 chars)]: {response.text[:200]}")
+            print(f"════════════════════════════════════════════════════════════════════════════════\n[Body (first 200 chars)]: {response.text[:200]}")
 
 def check_directory_listing(url, session, verify_ssl, verbose, timeout, spinner, silent, preview):
     try:
