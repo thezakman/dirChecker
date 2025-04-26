@@ -40,12 +40,13 @@ class DirectoryChecker:
                            'application/zip', 'application/octet-stream']
     
     def __init__(self, timeout=5, verify_ssl=False, user_agent="dirChecker/2.2", 
-                 custom_headers=None, max_threads=10):
+                 custom_headers=None, max_threads=10, verbose=False):
         self.timeout = timeout
         self.verify_ssl = verify_ssl
         self.user_agent = user_agent
         self.custom_headers = custom_headers or {}
         self.max_threads = max_threads
+        self.verbose = verbose
         self.session = self._create_session()
         
     def _create_session(self) -> requests.Session:
@@ -174,8 +175,22 @@ class DirectoryChecker:
         path_parts = parsed_url.path.strip('/').split('/')
         return len(path_parts)
     
-    def scan_urls(self, urls: List[str], verbose=False, silent=False, preview=False, status=False) -> List[Dict[str, Any]]:
-        all_urls = self._prepare_urls_to_test(urls)
+    def scan_urls(self, urls: List[str], verbose=False, silent=False, preview=False, status=False, double_slash=False) -> List[Dict[str, Any]]:
+        self.verbose = verbose
+
+        # Para debug
+        if verbose and double_slash and not silent:
+            print(f"\n{Fore.CYAN}[DEBUG] Double slash testing is ENABLED{Style.RESET_ALL}\n")
+        
+        all_urls = self._prepare_urls_to_test(urls, double_slash)
+        
+        # Para debug
+        if double_slash and verbose and not silent:
+            print(f"\n{Fore.CYAN}[DEBUG] URLs to test:{Style.RESET_ALL}")
+            for url in all_urls:
+                if '//' in url.replace('://', ''):
+                    print(f"  - {Fore.GREEN}{url}{Style.RESET_ALL}")
+        
         total_urls = len(all_urls)
         
         results = self._scan_silently(all_urls) if silent else self._scan_with_progress(all_urls, verbose, preview)
@@ -183,38 +198,115 @@ class DirectoryChecker:
         
         return results
     
-    def _prepare_urls_to_test(self, urls: List[str]) -> List[str]:
+    def _prepare_urls_to_test(self, urls: List[str], double_slash=False) -> List[str]:
         all_urls_to_test = []
         tested_urls = set()
         
         for url in urls:
-            self._add_url_and_parents(url, all_urls_to_test, tested_urls)
+            # Verificar primeiro se o URL é válido
+            if not url.startswith(('http://', 'https://')):
+                url = f"http://{url}"
             
+            # Para a URL original, sempre adicionamos
+            if url not in tested_urls:
+                all_urls_to_test.append(url)
+                tested_urls.add(url)
+            
+            # Verificar se é um arquivo com extensão
+            parsed_url = urlparse(url)
+            path_parts = parsed_url.path.strip('/').split('/')
+            last_part = path_parts[-1] if path_parts else ""
+            
+            # Verifica se o último componente tem uma extensão de arquivo
+            has_extension = '.' in last_part and not last_part.endswith('.')
+            
+            # Nunca adicione barra ao final de URLs que parecem ser arquivos
+            if not has_extension and not url.endswith('/'):
+                # Só adiciona a versão com / se não parece ser um arquivo
+                dir_url = f"{url}/"
+                if dir_url not in tested_urls:
+                    all_urls_to_test.append(dir_url)
+                    tested_urls.add(dir_url)
+                    
+                    # Se a opção double_slash estiver ativada, adiciona versão com barra dupla
+                    if double_slash:
+                        double_slash_url = f"{url}//"
+                        if double_slash_url not in tested_urls:
+                            all_urls_to_test.append(double_slash_url)
+                            tested_urls.add(double_slash_url)
+                            
+            # Se a opção double_slash estiver ativada e URL já termina com barra
+            elif double_slash and not has_extension and url.endswith('/'):
+                double_slash_url = f"{url}/"  # Isso só adiciona mais uma barra -> url//
+                if double_slash_url not in tested_urls:
+                    all_urls_to_test.append(double_slash_url)
+                    tested_urls.add(double_slash_url)
+                    
+                    # Adicione também para os diretórios que estão sendo testados
+                    if url in all_urls_to_test and url not in tested_urls:
+                        tested_urls.add(url)
+            
+            # Adicionar diretórios pais
+            self._add_parent_directories(url, all_urls_to_test, tested_urls, double_slash)
+            
+        # Ordenar URLs por profundidade (mais profundo primeiro)
+        all_urls_to_test.sort(key=lambda x: self._get_url_depth(x), reverse=True)
+        
         return all_urls_to_test
     
-    def _add_url_and_parents(self, url: str, all_urls: List[str], tested_urls: Set[str]) -> None:
+    def _add_parent_directories(self, url: str, all_urls: List[str], tested_urls: Set[str], double_slash=False) -> None:
         parsed_url = urlparse(url)
-        base_url = f"{parsed_url.scheme}://{parsed_url.netloc}/"
-        path_parts = parsed_url.path.strip('/').split('/')
-        
-        # Add original URL if not already tested
-        if url not in tested_urls:
-            all_urls.append(url)
-            tested_urls.add(url)
-        
-        # Add parent directories
-        current_path = ""
-        for part in path_parts:
-            current_path = f"{current_path}/{part}"
-            test_url = urljoin(base_url, current_path + "/")
-            if test_url not in tested_urls:
-                all_urls.append(test_url)
-                tested_urls.add(test_url)
-        
-        # Add base URL if not already tested
+        base_url = f"{parsed_url.scheme}://{parsed_url.netloc}"
+        path = parsed_url.path.strip('/')  # Removemos barras extras no início/fim
+
+        # Se a URL original termina com uma extensão de arquivo, nós a removemos
+        # antes de começar a construir diretórios pai
+        parts = []
+        if path:
+            parts = [p for p in path.split('/') if p]
+            # Se o último componente parece ser um arquivo, remove-o
+            if parts and '.' in parts[-1]:
+                parts.pop()
+
+        # Construir cada nível de diretório, do mais específico para o mais geral
+        current_parts = parts.copy()
+
+        while current_parts:
+            # Construir a URL atual
+            current_path = '/'.join(current_parts)
+            parent_url = f"{base_url}/{current_path}/"
+
+            # Normalizar a URL para evitar barras duplas
+            parent_url = parent_url.replace('//', '/')  # Corrigir barras duplas na path
+            parent_url = parent_url.replace('https:/', 'https://')  # Restaurar protocolo correto
+            parent_url = parent_url.replace('http:/', 'http://')    # Restaurar protocolo correto
+
+            if parent_url not in tested_urls:
+                all_urls.append(parent_url)
+                tested_urls.add(parent_url)
+                
+                # Se double_slash está ativado, adicionar versão com barra dupla para os diretórios pai também
+                if double_slash:
+                    double_slash_url = f"{parent_url}/"  # Adiciona uma barra extra
+                    if double_slash_url not in tested_urls:
+                        all_urls.append(double_slash_url)
+                        tested_urls.add(double_slash_url)
+
+            # Remover o componente mais profundo para a próxima iteração
+            current_parts.pop()
+
+        # Adicionar a URL base se ainda não foi adicionada
+        base_url = f"{base_url}/"
         if base_url not in tested_urls:
             all_urls.append(base_url)
             tested_urls.add(base_url)
+            
+            # Se double_slash está ativado, adicionar versão com barra dupla para a URL base
+            if double_slash:
+                double_slash_base = f"{base_url}/"
+                if double_slash_base not in tested_urls:
+                    all_urls.append(double_slash_base)
+                    tested_urls.add(double_slash_base)
     
     def _scan_with_progress(self, urls: List[str], verbose: bool, preview: bool) -> List[Dict[str, Any]]:
         results = []
@@ -239,7 +331,7 @@ class DirectoryChecker:
                         results.append(future.result())
                     except Exception as e:
                         results.append({'url': url, 'error': str(e), 'depth': self._get_url_depth(url)})
-        
+            
         return results
     
     def _scan_silently(self, urls: List[str]) -> List[Dict[str, Any]]:
@@ -257,20 +349,59 @@ class DirectoryChecker:
         return results
     
     def _display_results(self, results: List[Dict[str, Any]], verbose: bool, silent: bool, 
-                         preview: bool, status: bool, total_urls: int) -> None:
+                     preview: bool, status: bool, total_urls: int) -> None:
         if silent:
             # Print only vulnerable URLs in silent mode
             for result in results:
                 if result.get('is_listing'):
                     print(result['url'])
             return
-            
-        # Sort results by depth for verbose mode
-        if verbose:
-            results.sort(key=lambda x: (-x.get('depth', 0)))
         
-        # Display detailed results
+        # Encontrar a URL original (primeiro argumento)
+        original_url = None
         for result in results:
+            # A URL original é normalmente a mais profunda e a primeira na lista original
+            if not original_url or self._get_url_depth(result['url']) > self._get_url_depth(original_url):
+                original_url = result['url']
+        
+        # Se não encontrou a URL original, usa uma string vazia
+        if not original_url:
+            original_url = ""
+        
+        # Classificar os resultados em categorias:
+        # 1. URL original
+        # 2. URLs intermediárias (diretórios pais da URL original, ordenados do mais profundo para o menos profundo)
+        # 3. URL base (raiz)
+        
+        original_result = None
+        intermediate_results = []
+        base_result = None
+        
+        for result in results:
+            url = result['url']
+            parsed_url = urlparse(url)
+            base_url = f"{parsed_url.scheme}://{parsed_url.netloc}/"
+            
+            if url == original_url:
+                original_result = result
+            elif url == base_url:
+                base_result = result
+            else:
+                intermediate_results.append(result)
+        
+        # Ordenar resultados intermediários por profundidade (do mais profundo para o menos profundo)
+        intermediate_results.sort(key=lambda x: self._get_url_depth(x['url']), reverse=True)
+        
+        # Mostrar resultados na ordem: original -> intermediários -> base
+        ordered_results = []
+        if original_result:
+            ordered_results.append(original_result)
+        ordered_results.extend(intermediate_results)
+        if base_result:
+            ordered_results.append(base_result)
+        
+        # Exibir os resultados ordenados
+        for result in ordered_results:
             if 'error' in result and result['error'] and verbose:
                 self._print_error_result(result)
             elif result.get('is_listing') or verbose:
@@ -335,11 +466,30 @@ class DirectoryChecker:
             return {'emoji': "🔒", 'status': f"{Fore.GREEN}(DISABLED){Style.RESET_ALL}"}
     
     def _print_verbose_details(self, result: Dict[str, Any]) -> None:
+        """Print additional details in verbose mode"""
         response = result['response']
         elapsed_time = result.get('elapsed_time', 0)
+        # Print server header if available
+        server = response.headers.get('Server')
+        if server:
+            print(f"🖥️ {Fore.CYAN}[Server]{Style.RESET_ALL}: {Fore.WHITE}{server}{Style.RESET_ALL}")
         
         print(f"📦 {Fore.CYAN}[Content-Length]{Style.RESET_ALL}: {Fore.WHITE}{response.headers.get('Content-Length', 'Unknown')}{Style.RESET_ALL}")
         print(f"⏱️ {Fore.CYAN}[Elapsed Time]{Style.RESET_ALL}: {Fore.WHITE}{elapsed_time:.2f} seconds{Style.RESET_ALL}")
+        
+        
+        # Print security headers if available
+        security_headers = {
+            'X-Content-Type-Options': '🛡️ [Content-Type-Options]',
+            'X-XSS-Protection': '🛡️ [XSS-Protection]',
+            'X-Frame-Options': '🛡️ [Frame-Options]',
+            'Content-Security-Policy': '🛡️ [CSP]',
+            'Strict-Transport-Security': '🛡️ [HSTS]'
+        }
+        
+        for header, label in security_headers.items():
+            if header in response.headers:
+                print(f"{Fore.CYAN}{label}{Style.RESET_ALL}: {Fore.WHITE}{response.headers[header]}{Style.RESET_ALL}")
         
         if response.history:
             print(f"🔄 {Fore.CYAN}[Redirects]{Style.RESET_ALL}:")
@@ -347,6 +497,7 @@ class DirectoryChecker:
                 redirect_color = Fore.YELLOW if resp.status_code in [301, 302, 307, 308] else Fore.RED
                 print(f"   ↳ {redirect_color}{resp.status_code}{Style.RESET_ALL} → {resp.url}")
     
+
     def _print_preview(self, response) -> None:
         print(f"👀 {Fore.CYAN}[Body Preview]{Style.RESET_ALL}:")
         preview_text = response.text[:200].replace('\n', ' ').strip()
@@ -399,6 +550,7 @@ def parse_arguments():
     request_group.add_argument("-ua", "--user-agent", default="dirChecker/2.2", help="Custom User-Agent")
     request_group.add_argument("-H", "--headers", help="Custom headers (format: 'Header1:Value1,Header2:Value2')")
     request_group.add_argument("-t", "--threads", type=int, default=10, help="Number of concurrent threads")
+    request_group.add_argument("-ds", "--double-slash", action='store_true', help="Test URLs with double slashes for bypass")
     
     # Output options
     output_group = parser.add_argument_group('Output Options')
@@ -455,7 +607,8 @@ def main():
         verify_ssl=args.verify_ssl,
         user_agent=args.user_agent,
         custom_headers=custom_headers,
-        max_threads=args.threads
+        max_threads=args.threads,
+        verbose=args.verbose
     )
     
     # Scan URLs
@@ -464,7 +617,8 @@ def main():
         verbose=args.verbose,
         silent=args.silent,
         preview=args.preview,
-        status=args.status
+        status=args.status,
+        double_slash=args.double_slash
     )
 
 
