@@ -39,15 +39,26 @@ class DirectoryChecker:
     SKIP_CONTENT_TYPES = ['image/', 'video/', 'audio/', 'application/pdf', 
                            'application/zip', 'application/octet-stream']
     
+    # Códigos de erro comuns que indicam fechamento de conexão pelo servidor
+    CONNECTION_ERRORS = [
+        "Connection aborted",
+        "Connection reset by peer",
+        "Remote end closed connection",
+        "Connection refused",
+        "Connection timed out"
+    ]
+    
     def __init__(self, timeout=5, verify_ssl=False, user_agent="dirChecker/2.2", 
-                 custom_headers=None, max_threads=10, verbose=False):
+                 custom_headers=None, max_threads=10, verbose=False, reduced_timeout=2):
         self.timeout = timeout
+        self.reduced_timeout = reduced_timeout  # Timeout reduzido para URLs potencialmente problemáticas
         self.verify_ssl = verify_ssl
         self.user_agent = user_agent
         self.custom_headers = custom_headers or {}
         self.max_threads = max_threads
         self.verbose = verbose
         self.session = self._create_session()
+        self.connection_errors = 0  # Contador para rastrear erros de conexão
         
     def _create_session(self) -> requests.Session:
         session = requests.Session()
