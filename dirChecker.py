@@ -28,28 +28,51 @@ VERSION = "2.3"  # Incremented to reflect improvements
 class DirectoryChecker:
     """Class for checking directory listing vulnerabilities"""
     
-    BINARY_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.gif', '.pdf', '.mp4', '.zip', '.rar', 
-                         '.mp3', '.avi', '.mov', '.wmv', '.flv', '.doc', '.docx', '.xls', 
-                         '.xlsx', '.ppt', '.pptx', '.svg', '.webp', '.ico', '.exe'}
+    BINARY_EXTENSIONS = {
+        '.jpg', '.jpeg', '.png', '.gif', '.pdf', '.mp4', '.zip', '.rar', 
+        '.mp3', '.avi', '.mov', '.wmv', '.flv', '.doc', '.docx', '.xls', 
+        '.xlsx', '.ppt', '.pptx', '.svg', '.webp', '.ico', '.exe', '.dmg',
+        '.pkg', '.deb', '.rpm', '.tar', '.gz', '.bz2', '.7z', '.iso'
+        }
     
-    LISTING_PATTERNS = ["<ListBucketResult", "Index of", "Parent Directory", "Directory Listing For", 
-                        "<title>Index of", "Directory listing for", "[To Parent Directory]", 
-                        "<h1>Index of /", "Directory: /", "alt=\"\[DIR\]\"", "alt=\"[DIR]\"", 
-                        "Last modified</a>", "<h2>Directory listing of", "bucket-listing",
-                        "<table class=\"listing", "<td class=\"name\">", "Object Listing", "StorageExplorer"]
+    LISTING_PATTERNS = [
+        # Apache patterns
+        "<title>Index of", "Index of /", "Parent Directory", "Directory Listing For",
+        "Directory listing for", "[To Parent Directory]", "<h1>Index of /", 
+        "Directory: /", "alt=\"[DIR]\"", "alt=\"\\[DIR\\]\"", "Last modified</a>",
+        
+        # Nginx patterns
+        "<h1>Index of", "<title>Directory listing for", "<h2>Directory listing of",
+        
+        # IIS patterns
+        "Directory Listing Denied", "The Directory Browsing", "SystemAdmin</title>",
+        
+        # Cloud storage patterns
+        "<ListBucketResult", "bucket-listing", "Object Listing", "StorageExplorer",
+        "<table class=\"listing", "<td class=\"name\">", 
+        
+        # Generic patterns
+        "folder.gif", "file.gif", "back.gif", "[ICO]", "[   ]", "[TXT]",
+        "?C=N;O=D", "?C=M;O=A", "?C=S;O=A", "?C=D;O=A",
+        
+        # Custom server patterns
+        "autoindex", "fancy indexing", "server-generated page"
+    ]
     
-    SKIP_CONTENT_TYPES = ['image/', 'video/', 'audio/', 'application/pdf', 
-                           'application/zip', 'application/octet-stream']
+    SKIP_CONTENT_TYPES = [
+        'image/', 'video/', 'audio/', 'application/pdf', 
+        'application/zip', 'application/octet-stream',
+        'application/x-executable', 'application/x-msdownload'
+    ]
     
     # Common error codes that indicate server connection closure
     CONNECTION_ERRORS = [
-        "Connection aborted",
-        "Connection reset by peer", 
-        "Remote end closed connection",
-        "Connection refused",
-        "Connection timed out"
+        "Connection aborted", "Connection reset by peer", 
+        "Remote end closed connection", "Connection refused",
+        "Connection timed out", "Name or service not known",
+        "No route to host", "Network is unreachable"
     ]
-    
+
     def __init__(self, timeout: int = 5, verify_ssl: bool = False, 
                  user_agent: str = None, custom_headers: Dict[str, str] = None, 
                  max_threads: int = 10, verbose: bool = False, 
