@@ -3,7 +3,7 @@ import requests
 import argparse
 import time
 import sys
-from urllib.parse import urlparse, urljoin
+from urllib.parse import urlparse
 from requests.packages.urllib3.exceptions import InsecureRequestWarning
 from colorama import Fore, Style, init
 from rich.console import Console
@@ -11,7 +11,6 @@ from rich.progress import Progress, TextColumn, BarColumn, TaskProgressColumn
 from typing import List, Dict, Set, Any, Optional, Tuple
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import logging
-import re
 
 # Configure logging and suppress warnings
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
@@ -22,18 +21,18 @@ requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
 init(autoreset=True)
 console = Console()
 
-# Version control
-VERSION = "2.3"  # Incremented to reflect improvements
+VERSION = "2.4"
 
 class DirectoryChecker:
     """Class for checking directory listing vulnerabilities"""
     
     BINARY_EXTENSIONS = {
-        '.jpg', '.jpeg', '.png', '.gif', '.pdf', '.mp4', '.zip', '.rar', 
-        '.mp3', '.avi', '.mov', '.wmv', '.flv', '.doc', '.docx', '.xls', 
-        '.xlsx', '.ppt', '.pptx', '.svg', '.webp', '.ico', '.exe', '.dmg',
-        '.pkg', '.deb', '.rpm', '.tar', '.gz', '.bz2', '.7z', '.iso'
-        }
+        '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.ico', '.svg',
+        '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
+        '.mp4', '.avi', '.mov', '.wmv', '.flv', '.mp3', '.wav', '.ogg',
+        '.zip', '.rar', '.tar', '.gz', '.bz2', '.7z', '.iso',
+        '.exe', '.dmg', '.pkg', '.deb', '.rpm'
+    }
     
     LISTING_PATTERNS = [
         # Apache patterns
@@ -70,7 +69,8 @@ class DirectoryChecker:
         "Connection aborted", "Connection reset by peer", 
         "Remote end closed connection", "Connection refused",
         "Connection timed out", "Name or service not known",
-        "No route to host", "Network is unreachable"
+        "No route to host", "Network is unreachable",
+        "SSL: CERTIFICATE_VERIFY_FAILED", "Max retries exceeded"
     ]
 
     def __init__(self, timeout: int = 5, verify_ssl: bool = False, 
@@ -107,64 +107,127 @@ class DirectoryChecker:
         }
         
     def _create_session(self) -> requests.Session:
-        """Creates a configured HTTP session"""
+        """Creates a configured HTTP session with optimal settings"""
         session = requests.Session()
-        adapter = requests.adapters.HTTPAdapter(
-            max_retries=1,  # Limit to 1 to avoid overloading the server
-            pool_connections=self.max_threads,
-            pool_maxsize=self.max_threads
+
+        # Configure retry strategy
+        from urllib3.util.retry import Retry
+        retry_strategy = Retry(
+            total=2,
+            status_forcelist=[429, 500, 502, 503, 504],
+            backoff_factor=0.5
         )
+
+        adapter = requests.adapters.HTTPAdapter(
+            max_retries=retry_strategy,
+            pool_connections=self.max_threads,
+            pool_maxsize=self.max_threads * 2
+        )
+
         session.mount('http://', adapter)
         session.mount('https://', adapter)
-        session.headers.update({'User-Agent': self.user_agent})
+
+        # Set default headers
+        default_headers = {
+            'User-Agent': self.user_agent,
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.5',
+            'Accept-Encoding': 'gzip, deflate',
+            'Connection': 'keep-alive'
+        }
+        session.headers.update(default_headers)
+
         if self.custom_headers:
             session.headers.update(self.custom_headers)
+
         return session
 
     def is_directory_listing(self, response: requests.Response) -> bool:
         """
-        Checks if the response contains directory listing
-        
+        Analyzes response to determine if it contains directory listing
+
         Args:
             response: HTTP response object
-            
+
         Returns:
-            bool: True if it's a directory listing, False otherwise
+            bool: True if directory listing detected, False otherwise
         """
+        if not response or not response.text:
+            return False
+
         # Skip binary content types
         content_type = response.headers.get('Content-Type', '').lower()
-        if any(binary_type in content_type for binary_type in self.SKIP_CONTENT_TYPES):
+        if any(ct in content_type for ct in self.SKIP_CONTENT_TYPES):
             return False
-        
-        # Check for S3 bucket listings
+
+        response_text = response.text.lower()
+
+        # Fast check for obvious directory listing indicators
+        if self._check_obvious_patterns(response_text):
+            return True
+
+        # Check cloud storage specific patterns
+        if self._check_cloud_storage_listing(response):
+            return True
+
+        # Check for JSON/API directory listings
+        if self._check_json_listing(response):
+            return True
+
+        # Comprehensive pattern matching with scoring
+        return self._score_directory_patterns(response_text) >= 2
+
+    def _check_obvious_patterns(self, text: str) -> bool:
+        """Check for obvious directory listing patterns"""
+        obvious_patterns = [
+            'index of /', 'directory listing', 'parent directory',
+            '[to parent directory]', 'alt="[dir]"'
+        ]
+        return any(pattern in text for pattern in obvious_patterns)
+
+    def _check_cloud_storage_listing(self, response: requests.Response) -> bool:
+        """Check for cloud storage directory listings"""
+        # AWS S3
         if "amazonaws.com" in response.url and response.status_code == 200:
-            if "<ListBucketResult" in response.text and all(marker in response.text for marker in ["<Contents>", "<Key>"]):
-                return True
-        
-        # Skip S3 access denied responses
-        if response.status_code == 403 and "<e>" in response.text:
-            if any(marker in response.text for marker in ["<Message>Access Denied</Message>", "InvalidAccessKeyId"]):
-                return False
-        
-        # Check for JSON directory listings
-        try:
-            json_data = response.json()
-            if isinstance(json_data, dict) and any(key in json_data for key in ['objects', 'contents']):
-                return True
-        except:
-            pass
-        
-        # Count positive directory listing markers
-        positive_counts = sum(1 for pattern in self.LISTING_PATTERNS if pattern in response.text)
-        if positive_counts >= 2:
-            return True
-        
-        # Check for high link count combined with directory-related terms
-        if (response.text.count('<a href=') > 10 and 
-            any(term in response.text.lower() for term in ['directory', 'listing', 'index of', 'parent'])):
-            return True
-        
+            if "<listbucketresult" in response.text.lower():
+                return "<contents>" in response.text.lower() and "<key>" in response.text.lower()
+
+        # Skip access denied responses
+        if response.status_code == 403:
+            denied_patterns = ["access denied", "invalidaccesskeyid", "forbidden"]
+            return not any(pattern in response.text.lower() for pattern in denied_patterns)
+
         return False
+
+    def _check_json_listing(self, response: requests.Response) -> bool:
+        """Check for JSON-based directory listings"""
+        try:
+            if 'application/json' in response.headers.get('Content-Type', ''):
+                data = response.json()
+                if isinstance(data, dict):
+                    return any(key in data for key in ['objects', 'contents', 'files', 'entries'])
+        except (ValueError, TypeError):
+            pass
+        return False
+
+    def _score_directory_patterns(self, text: str) -> int:
+        """Score text based on directory listing patterns"""
+        score = 0
+
+        # Pattern matching with weights
+        for pattern in self.LISTING_PATTERNS:
+            if pattern.lower() in text:
+                score += 1
+
+        # High link count bonus
+        if text.count('<a href=') > 10:
+            score += 1
+
+        # Table structure bonus
+        if '<table' in text and '<td' in text:
+            score += 1
+
+        return score
 
     def check_url(self, url: str, verbose: bool = False, preview: bool = False) -> Dict[str, Any]:
         """
@@ -223,28 +286,43 @@ class DirectoryChecker:
             return result
             
         except requests.exceptions.RequestException as e:
-            # Better handling of connection errors
             error_message = str(e)
             self.stats['failed_requests'] += 1
-            
-            # Check if it's a known connection error
-            is_connection_error = any(err in error_message for err in self.CONNECTION_ERRORS)
-            if is_connection_error:
+
+            # Categorize and handle different error types
+            if any(err in error_message for err in self.CONNECTION_ERRORS):
                 self.stats['connection_errors'] += 1
-                # More friendly error for double slashes that commonly cause problems
                 if '//' in url.replace('://', '') and 'closed connection' in error_message:
-                    result['error'] = f"Server closed connection (common in double slash tests)"
+                    result['error'] = "Server closed connection (double slash vulnerability test)"
                 else:
-                    result['error'] = f"Connection error: {error_message}"
+                    result['error'] = f"Connection error: {self._simplify_error_message(error_message)}"
             else:
-                result['error'] = f"Error: {error_message}"
-                
+                result['error'] = f"Request failed: {self._simplify_error_message(error_message)}"
+
             return result
         except Exception as e:
             # Capture other non-request related errors
             self.stats['failed_requests'] += 1
             result['error'] = f"Unexpected error: {str(e)}"
             return result
+
+    def _simplify_error_message(self, error_msg: str) -> str:
+        """Simplify error messages for better readability"""
+        simplifications = {
+            'HTTPSConnectionPool': 'HTTPS connection failed',
+            'HTTPConnectionPool': 'HTTP connection failed',
+            'NewConnectionError': 'Cannot establish connection',
+            'ConnectTimeoutError': 'Connection timeout',
+            'ReadTimeoutError': 'Read timeout',
+            'SSLError': 'SSL/TLS error'
+        }
+
+        for pattern, replacement in simplifications.items():
+            if pattern in error_msg:
+                return replacement
+
+        # Truncate very long error messages
+        return error_msg[:100] + '...' if len(error_msg) > 100 else error_msg
 
     def _determine_effective_timeout(self, url: str) -> int:
         """Determines effective timeout based on URL"""
@@ -262,46 +340,77 @@ class DirectoryChecker:
         """Makes a HEAD request"""
         return self.session.head(url, verify=self.verify_ssl, timeout=timeout, allow_redirects=True)
     
-    def _make_get_request(self, url: str, timeout: int, max_content_size: int = 20000) -> requests.Response:
+    def _make_get_request(self, url: str, timeout: int, max_content_size: int = 50000) -> requests.Response:
         """
-        Makes a GET request with streaming to limit download size
-        
+        Makes optimized GET request with intelligent content streaming
+
         Args:
             url: URL to request
             timeout: Timeout in seconds
             max_content_size: Maximum content size to download in bytes
-            
+
         Returns:
-            Response: HTTP response object
+            Response: HTTP response object with limited content
         """
-        response = self.session.get(url, verify=self.verify_ssl, timeout=timeout, stream=True)
-        
-        # Download just enough to analyze
-        content = ""
-        content_size = 0
+        response = self.session.get(
+            url,
+            verify=self.verify_ssl,
+            timeout=timeout,
+            stream=True,
+            allow_redirects=True
+        )
+
+        # Efficiently read and decode content
+        content_chunks = []
+        total_size = 0
+
         try:
-            for chunk in response.iter_content(chunk_size=1024, decode_unicode=True):
-                if chunk:
-                    content += chunk if isinstance(chunk, str) else chunk.decode('utf-8', errors='ignore')
-                    content_size += len(chunk)
-                    if content_size >= max_content_size:
-                        break
-            
-            response._content = content.encode('utf-8')
+            for chunk in response.iter_content(chunk_size=8192, decode_unicode=False):
+                if not chunk:
+                    continue
+
+                content_chunks.append(chunk)
+                total_size += len(chunk)
+
+                # Stop if we've read enough for analysis
+                if total_size >= max_content_size:
+                    break
+
+            # Efficiently join and decode content
+            raw_content = b''.join(content_chunks)
+            try:
+                content = raw_content.decode('utf-8', errors='replace')
+            except UnicodeDecodeError:
+                # Fallback to latin-1 if UTF-8 fails
+                content = raw_content.decode('latin-1', errors='replace')
+
+            response._content = content.encode('utf-8', errors='replace')
+
         except Exception as e:
-            # If there's an error reading content, save what we have already
-            logger.debug(f"Error reading full content: {str(e)}")
-            response._content = content.encode('utf-8')
-        
+            logger.debug(f"Error reading content from {url}: {str(e)}")
+            response._content = b''
+
         return response
     
     def _should_skip_from_headers(self, headers: Dict[str, str]) -> bool:
-        """Checks if download should be skipped based on headers"""
+        """Determines if content should be skipped based on response headers"""
         content_type = headers.get('Content-Type', '').lower()
         content_length = headers.get('Content-Length', '0')
-        
-        return (any(ct in content_type for ct in self.SKIP_CONTENT_TYPES) or 
-                (content_length.isdigit() and int(content_length) > 1000000))
+        content_encoding = headers.get('Content-Encoding', '').lower()
+
+        # Skip binary content types
+        if any(ct in content_type for ct in self.SKIP_CONTENT_TYPES):
+            return True
+
+        # Skip very large files (> 10MB)
+        if content_length.isdigit() and int(content_length) > 10_000_000:
+            return True
+
+        # Skip compressed archives that are likely not directory listings
+        if content_encoding in ['compress', 'x-compress'] and 'text/html' not in content_type:
+            return True
+
+        return False
     
     def _is_binary_file(self, url: str) -> bool:
         """Checks if URL points to a binary file"""
@@ -365,40 +474,101 @@ class DirectoryChecker:
     
     def _prepare_urls_to_test(self, urls: List[str], double_slash: bool = False) -> List[str]:
         """
-        Prepares list of URLs to test, including parent directories and variants
-        
+        Intelligently prepares comprehensive URL list for testing
+
         Args:
             urls: List of original URLs
-            double_slash: Flag to add double slash variants
-            
+            double_slash: Flag to add double slash bypass variants
+
         Returns:
-            List[str]: Complete list of URLs to test
+            List[str]: Optimized list of URLs to test
         """
-        all_urls_to_test = []
-        tested_urls = set()
-        
+        url_set = set()
+        final_urls = []
+
         for url in urls:
-            # Normalize and sanitize URL
-            url = self._normalize_url(url)
-            
-            # For the original URL, we always add it
-            if url not in tested_urls:
-                all_urls_to_test.append(url)
-                tested_urls.add(url)
-            
-            # Check if it's a file with extension
-            has_extension = self._has_file_extension(url)
-            
-            # Add variants based on URL (with / at the end or double slash)
-            self._add_url_variants(url, all_urls_to_test, tested_urls, has_extension, double_slash)
-            
-            # Add parent directories
-            self._add_parent_directories(url, all_urls_to_test, tested_urls, double_slash)
-            
-        # Sort URLs by depth (deepest first)
-        all_urls_to_test.sort(key=lambda x: self._get_url_depth(x), reverse=True)
-        
-        return all_urls_to_test
+            normalized_url = self._normalize_url(url)
+
+            # Add original URL
+            if normalized_url not in url_set:
+                final_urls.append(normalized_url)
+                url_set.add(normalized_url)
+
+            # Generate URL variants and parent directories
+            variants = self._generate_url_variants(normalized_url, double_slash)
+
+            for variant in variants:
+                if variant not in url_set:
+                    final_urls.append(variant)
+                    url_set.add(variant)
+
+        # Optimize URL order for efficient scanning
+        return self._optimize_url_order(final_urls)
+
+    def _generate_url_variants(self, url: str, double_slash: bool) -> List[str]:
+        """Generate all URL variants for comprehensive testing"""
+        variants = []
+        parsed_url = urlparse(url)
+
+        # Generate directory variants
+        variants.extend(self._get_directory_variants(url, double_slash))
+
+        # Generate parent directory chain
+        variants.extend(self._get_parent_directories(url, double_slash))
+
+        return variants
+
+    def _get_directory_variants(self, url: str, double_slash: bool) -> List[str]:
+        """Get directory path variants"""
+        variants = []
+
+        if not self._has_file_extension(url):
+            # Add trailing slash variant
+            if not url.endswith('/'):
+                variants.append(f"{url}/")
+
+            # Add double slash variants for bypass testing
+            if double_slash:
+                if url.endswith('/'):
+                    variants.append(f"{url}/")
+                else:
+                    variants.append(f"{url}//")
+
+        return variants
+
+    def _get_parent_directories(self, url: str, double_slash: bool) -> List[str]:
+        """Extract all parent directories for testing"""
+        parsed_url = urlparse(url)
+        base_url = f"{parsed_url.scheme}://{parsed_url.netloc}"
+        path_parts = [p for p in parsed_url.path.strip('/').split('/') if p]
+
+        # Remove filename if present
+        if path_parts and '.' in path_parts[-1] and not path_parts[-1].startswith('.'):
+            path_parts.pop()
+
+        variants = []
+
+        # Build parent directory hierarchy
+        for i in range(len(path_parts)):
+            parent_path = '/'.join(path_parts[:i+1])
+            parent_url = f"{base_url}/{parent_path}/"
+            variants.append(parent_url)
+
+            if double_slash:
+                variants.append(f"{parent_url}/")
+
+        # Add root directory
+        root_url = f"{base_url}/"
+        variants.append(root_url)
+        if double_slash:
+            variants.append(f"{root_url}/")
+
+        return variants
+
+    def _optimize_url_order(self, urls: List[str]) -> List[str]:
+        """Optimize URL scanning order for efficiency"""
+        # Sort by depth (deeper first) then alphabetically for consistency
+        return sorted(urls, key=lambda x: (-self._get_url_depth(x), x))
     
     def _normalize_url(self, url: str) -> str:
         """Normalizes a URL ensuring correct protocol"""
@@ -415,98 +585,8 @@ class DirectoryChecker:
         # Check if the last component has a file extension
         return '.' in last_part and not last_part.endswith('.')
     
-    def _add_url_variants(self, url: str, all_urls: List[str], tested_urls: Set[str], 
-                        has_extension: bool, double_slash: bool) -> None:
-        """Adds URL variants (with / at the end or double slash)"""
-        # Never add slash to URLs that look like files
-        if not has_extension and not url.endswith('/'):
-            # Add version with / if it doesn't look like a file
-            dir_url = f"{url}/"
-            if dir_url not in tested_urls:
-                all_urls.append(dir_url)
-                tested_urls.add(dir_url)
-                
-                # If double_slash option is enabled, add double slash version
-                if double_slash:
-                    double_slash_url = f"{url}//"
-                    if double_slash_url not in tested_urls:
-                        all_urls.append(double_slash_url)
-                        tested_urls.add(double_slash_url)
-                        
-        # If double_slash is enabled and URL already ends with slash
-        elif double_slash and not has_extension and url.endswith('/'):
-            double_slash_url = f"{url}/"  # This adds an extra slash -> url//
-            if double_slash_url not in tested_urls:
-                all_urls.append(double_slash_url)
-                tested_urls.add(double_slash_url)
     
-    def _add_parent_directories(self, url: str, all_urls: List[str], tested_urls: Set[str], double_slash: bool = False) -> None:
-        """
-        Adds parent directories of the URL for testing
-        
-        Args:
-            url: Original URL
-            all_urls: List of URLs to add to
-            tested_urls: Set of already tested URLs
-            double_slash: Flag to add double slash variants
-        """
-        parsed_url = urlparse(url)
-        base_url = f"{parsed_url.scheme}://{parsed_url.netloc}"
-        path = parsed_url.path.strip('/')  # Remove extra slashes at beginning/end
-
-        # If the original URL ends with a file extension, we remove it
-        # before starting to build parent directories
-        parts = []
-        if path:
-            parts = [p for p in path.split('/') if p]
-            # If the last component looks like a file, remove it
-            if parts and '.' in parts[-1]:
-                parts.pop()
-
-        # Build each directory level, from most specific to most general
-        current_parts = parts.copy()
-
-        while current_parts:
-            # Build the current URL
-            current_path = '/'.join(current_parts)
-            parent_url = f"{base_url}/{current_path}/"
-
-            # Normalize URL to avoid unintended double slashes
-            parent_url = self._fix_url_protocol(parent_url)
-
-            if parent_url not in tested_urls:
-                all_urls.append(parent_url)
-                tested_urls.add(parent_url)
-                
-                # If double_slash is enabled, add double slash version for parent directories too
-                if double_slash:
-                    double_slash_url = f"{parent_url}/"  # Adds an extra slash
-                    if double_slash_url not in tested_urls:
-                        all_urls.append(double_slash_url)
-                        tested_urls.add(double_slash_url)
-
-            # Remove the deepest component for next iteration
-            current_parts.pop()
-
-        # Add the base URL if not already added
-        base_url_with_slash = f"{base_url}/"
-        if base_url_with_slash not in tested_urls:
-            all_urls.append(base_url_with_slash)
-            tested_urls.add(base_url_with_slash)
-            
-            # Double slash for base URL
-            if double_slash:
-                double_slash_base = f"{base_url_with_slash}/"
-                if double_slash_base not in tested_urls:
-                    all_urls.append(double_slash_base)
-                    tested_urls.add(double_slash_base)
                     
-    def _fix_url_protocol(self, url: str) -> str:
-        """Fixes URLs that might have damaged protocol due to replacements"""
-        url = url.replace('//', '/')  # Fix unintended double slashes in path
-        url = url.replace('https:/', 'https://')  # Restore correct protocol
-        url = url.replace('http:/', 'http://')    # Restore correct protocol
-        return url
     
     def _scan_with_progress(self, urls: List[str], verbose: bool, preview: bool) -> List[Dict[str, Any]]:
         """
