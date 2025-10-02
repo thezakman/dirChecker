@@ -21,7 +21,7 @@ requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
 init(autoreset=True)
 console = Console()
 
-VERSION = "2.4"
+VERSION = "2.5"
 
 class DirectoryChecker:
     """Class for checking directory listing vulnerabilities"""
@@ -37,23 +37,24 @@ class DirectoryChecker:
     LISTING_PATTERNS = [
         # Apache patterns
         "<title>Index of", "Index of /", "Parent Directory", "Directory Listing For",
-        "Directory listing for", "[To Parent Directory]", "<h1>Index of /", 
+        "Directory listing for", "[To Parent Directory]", "<h1>Index of /",
         "Directory: /", "alt=\"[DIR]\"", "alt=\"\\[DIR\\]\"", "Last modified</a>",
-        
+
         # Nginx patterns
         "<h1>Index of", "<title>Directory listing for", "<h2>Directory listing of",
-        
+
         # IIS patterns
         "Directory Listing Denied", "The Directory Browsing", "SystemAdmin</title>",
-        
-        # Cloud storage patterns
+
+        # Cloud storage patterns (AWS S3, Google Cloud Storage, Azure)
         "<ListBucketResult", "bucket-listing", "Object Listing", "StorageExplorer",
-        "<table class=\"listing", "<td class=\"name\">", 
-        
+        "<table class=\"listing", "<td class=\"name\">", "<Prefix>", "<Contents>",
+        "<EnumerationResults", "BlobPrefix", "<Blobs>", "<Name>",
+
         # Generic patterns
         "folder.gif", "file.gif", "back.gif", "[ICO]", "[   ]", "[TXT]",
         "?C=N;O=D", "?C=M;O=A", "?C=S;O=A", "?C=D;O=A",
-        
+
         # Custom server patterns
         "autoindex", "fancy indexing", "server-generated page"
     ]
@@ -73,13 +74,13 @@ class DirectoryChecker:
         "SSL: CERTIFICATE_VERIFY_FAILED", "Max retries exceeded"
     ]
 
-    def __init__(self, timeout: int = 5, verify_ssl: bool = False, 
-                 user_agent: str = None, custom_headers: Dict[str, str] = None, 
-                 max_threads: int = 10, verbose: bool = False, 
+    def __init__(self, timeout: int = 5, verify_ssl: bool = False,
+                 user_agent: str = None, custom_headers: Dict[str, str] = None,
+                 max_threads: int = 10, verbose: bool = False,
                  reduced_timeout: int = 2):
         """
         Initialize the directory checker
-        
+
         Args:
             timeout: Request timeout in seconds
             verify_ssl: Verify SSL certificates
@@ -94,7 +95,7 @@ class DirectoryChecker:
         self.verify_ssl = verify_ssl
         self.user_agent = user_agent or f"dirChecker/{VERSION}"
         self.custom_headers = custom_headers or {}
-        self.max_threads = max_threads
+        self.max_threads = min(max_threads, 50)  # Cap max threads at 50 for stability
         self.verbose = verbose
         self.session = self._create_session()
         self.connection_errors = 0
@@ -187,15 +188,36 @@ class DirectoryChecker:
 
     def _check_cloud_storage_listing(self, response: requests.Response) -> bool:
         """Check for cloud storage directory listings"""
+        response_text_lower = response.text.lower()
+
         # AWS S3
         if "amazonaws.com" in response.url and response.status_code == 200:
-            if "<listbucketresult" in response.text.lower():
-                return "<contents>" in response.text.lower() and "<key>" in response.text.lower()
+            if "<listbucketresult" in response_text_lower:
+                return "<contents>" in response_text_lower or "<commonprefixes>" in response_text_lower
+
+        # Google Cloud Storage
+        if "storage.googleapis.com" in response.url and response.status_code == 200:
+            content_type = response.headers.get('Content-Type', '').lower()
+            if 'application/xml' in content_type or 'text/xml' in content_type:
+                # Check for GCS bucket listing XML structure
+                if "<listbucketresult" in response_text_lower:
+                    # Valid listing has either items or prefixes
+                    has_contents = "<contents>" in response_text_lower
+                    has_prefixes = "<commonprefixes>" in response_text_lower
+                    has_keys = "<key>" in response_text_lower
+                    is_substantial = len(response.text) > 500
+
+                    return has_contents or has_prefixes or (has_keys and is_substantial)
+
+        # Azure Blob Storage
+        if "blob.core.windows.net" in response.url and response.status_code == 200:
+            if "<enumerationresults" in response_text_lower:
+                return "<blobs>" in response_text_lower or "<blobprefix>" in response_text_lower
 
         # Skip access denied responses
         if response.status_code == 403:
             denied_patterns = ["access denied", "invalidaccesskeyid", "forbidden"]
-            return not any(pattern in response.text.lower() for pattern in denied_patterns)
+            return not any(pattern in response_text_lower for pattern in denied_patterns)
 
         return False
 
@@ -219,25 +241,32 @@ class DirectoryChecker:
             if pattern.lower() in text:
                 score += 1
 
-        # High link count bonus
-        if text.count('<a href=') > 10:
+        # High link count bonus (likely a file listing)
+        link_count = text.count('<a href=')
+        if link_count > 10:
+            score += 2
+        elif link_count > 5:
             score += 1
 
         # Table structure bonus
         if '<table' in text and '<td' in text:
             score += 1
 
+        # XML listing structure (for APIs and cloud storage)
+        if '<key>' in text and '<size>' in text:
+            score += 2
+
         return score
 
     def check_url(self, url: str, verbose: bool = False, preview: bool = False) -> Dict[str, Any]:
         """
         Checks if a specific URL is vulnerable to directory listing
-        
+
         Args:
             url: URL to check
             verbose: Verbose mode
             preview: Show response body preview
-            
+
         Returns:
             Dict: Result of the check with detailed information
         """
@@ -247,13 +276,14 @@ class DirectoryChecker:
             'depth': self._get_url_depth(url),
             'error': None
         }
-        
+
         # Increment total URLs counter
         self.stats['total_urls'] += 1
-        
+
         try:
-            # Skip binary files unless verbose mode
-            if self._is_binary_file(url) and not verbose:
+            # Skip binary files in non-verbose mode ONLY if it's a direct file request
+            # Always test directories even if they contain binary extensions in path
+            if self._is_binary_file(url) and not verbose and not url.endswith('/'):
                 result['skipped'] = "Binary file extension"
                 return result
             
@@ -340,14 +370,14 @@ class DirectoryChecker:
         """Makes a HEAD request"""
         return self.session.head(url, verify=self.verify_ssl, timeout=timeout, allow_redirects=True)
     
-    def _make_get_request(self, url: str, timeout: int, max_content_size: int = 50000) -> requests.Response:
+    def _make_get_request(self, url: str, timeout: int, max_content_size: int = 100000) -> requests.Response:
         """
         Makes optimized GET request with intelligent content streaming
 
         Args:
             url: URL to request
             timeout: Timeout in seconds
-            max_content_size: Maximum content size to download in bytes
+            max_content_size: Maximum content size to download in bytes (default 100KB)
 
         Returns:
             Response: HTTP response object with limited content
@@ -658,11 +688,11 @@ class DirectoryChecker:
         
         return results
     
-    def _display_results(self, results: List[Dict[str, Any]], verbose: bool, silent: bool, 
+    def _display_results(self, results: List[Dict[str, Any]], verbose: bool, silent: bool,
                       preview: bool, status: bool, total_urls: int) -> None:
         """
         Displays scan results
-        
+
         Args:
             results: Scan results
             verbose: Verbose mode
@@ -677,15 +707,19 @@ class DirectoryChecker:
                 if result.get('is_listing'):
                     print(result['url'])
             return
-        
+
         # Sort results by category and depth
         ordered_results = self._organize_results(results)
-        
+
         # Display the ordered results
         for result in ordered_results:
             if 'error' in result and result['error'] and verbose:
                 self._print_error_result(result)
-            elif result.get('is_listing') or verbose:
+            elif result.get('is_listing'):
+                # Always show vulnerable listings
+                self._print_url_result(result, verbose, preview)
+            elif verbose:
+                # In verbose mode, show all results
                 self._print_url_result(result, verbose, preview)
         
         # Show statistics if requested
@@ -867,7 +901,7 @@ def print_banner():
  / _` | | '__/ /  | '_ \ / _ \/ __| |/ / _ \ '__|
 | (_| | | | / /___| | | |  __/ (__|   <  __/ |
  \__,_|_|_| \____/|_| |_|\___|\___|_|\_\___|_| {Fore.LIGHTGREEN_EX}v{VERSION}'''
-    sub_banner = "\t    - why checking manually?"
+    sub_banner = "\t    - why check manually?"
     print(f"{Fore.GREEN}{banner}{Style.RESET_ALL}")
     print(f"{Fore.WHITE}{sub_banner}{Style.RESET_ALL}\n")
 
