@@ -63,11 +63,6 @@ def _is_cloud_storage_listing(response: requests.Response, body: str) -> bool:
     if "blob.core.windows.net" in url and status == 200 and "<enumerationresults" in body:
         return "<blobs>" in body or "<blobprefix>" in body
 
-    # A 403 that is not an explicit access-denied page may still leak a listing.
-    if status == 403:
-        denied = ("access denied", "invalidaccesskeyid", "forbidden")
-        return not any(token in body for token in denied)
-
     return False
 
 
@@ -86,17 +81,23 @@ def _is_json_listing(response: requests.Response) -> bool:
 
 def _score(body: str) -> int:
     """Weighted heuristic score for ambiguous responses."""
-    score = sum(1 for pattern in LISTING_PATTERNS if pattern in body)
+    pattern_hits = sum(1 for pattern in LISTING_PATTERNS if pattern in body)
+    score = pattern_hits
 
-    link_count = body.count("<a href=")
-    if link_count > 10:
-        score += 2
-    elif link_count > 5:
-        score += 1
+    # Structural cues (lots of links, a file table) are normal furniture on
+    # ordinary web pages, so they only reinforce an existing listing signal —
+    # on their own they must never push a plain page over the threshold.
+    if pattern_hits:
+        link_count = body.count("<a href=")
+        if link_count > 10:
+            score += 2
+        elif link_count > 5:
+            score += 1
 
-    if "<table" in body and "<td" in body:
-        score += 1
+        if "<table" in body and "<td" in body:
+            score += 1
 
+    # Cloud object rows (<Key>…<Size>) are a strong standalone signal.
     if "<key>" in body and "<size>" in body:
         score += 2
 

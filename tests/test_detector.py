@@ -44,7 +44,32 @@ def test_json_listing():
     assert detector.is_directory_listing(resp)
 
 
-def test_score_threshold_many_links_and_table():
+def test_listing_pattern_with_links_and_table():
+    """A real listing signal plus structural cues clears the threshold."""
+    links = "".join(f"<a href='f{i}'>f{i}</a>" for i in range(12))
+    body = f"<h1>Directory: /data</h1><table>{links}<td>Last Modified</a></td></table>"
+    assert detector.is_directory_listing(_response(body))
+
+
+def test_links_and_table_without_listing_signal_not_flagged():
+    """Many links and a table alone (a normal page) must not be flagged."""
     links = "".join(f"<a href='f{i}'>f{i}</a>" for i in range(12))
     body = f"<table>{links}<td>x</td></table>"
-    assert detector.is_directory_listing(_response(body))
+    assert not detector.is_directory_listing(_response(body))
+
+
+def test_403_error_page_not_flagged():
+    """A 403 error page without listing content is not a vulnerability."""
+    body = (
+        "<html><head><title>403 Proibido</title></head>"
+        "<body><h1>Acesso negado</h1><p>Voce nao tem permissao.</p></body></html>"
+    )
+    assert not detector.is_directory_listing(_response(body, status=403))
+
+
+def test_403_does_not_flag_non_cloud_url():
+    """Even a content-rich 403 page on a normal host is not a listing."""
+    links = "".join(f"<a href='/menu/{i}'>item {i}</a>" for i in range(20))
+    body = f"<html><body><nav>{links}</nav><h1>Forbidden by policy</h1></body></html>"
+    resp = _response(body, status=403, url="https://www.example.coop.br/repositorio/")
+    assert not detector.is_directory_listing(resp)

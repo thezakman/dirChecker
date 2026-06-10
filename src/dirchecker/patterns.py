@@ -30,7 +30,7 @@ LISTING_PATTERNS: tuple[str, ...] = (
     # Cloud storage (AWS S3, GCS, Azure)
     "<listbucketresult", "bucket-listing", "object listing", "storageexplorer",
     '<table class="listing', '<td class="name">', "<prefix>", "<contents>",
-    "<enumerationresults", "blobprefix", "<blobs>", "<name>",
+    "<enumerationresults", "blobprefix", "<blobs>",
     # Generic auto-index artefacts
     "folder.gif", "file.gif", "back.gif", "[ico]", "[   ]", "[txt]",
     "?c=n;o=d", "?c=m;o=a", "?c=s;o=a", "?c=d;o=a",

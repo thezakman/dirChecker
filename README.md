@@ -9,7 +9,7 @@
               - why check manually?
 ```
 
-![version](https://img.shields.io/badge/version-3.0.0-brightgreen)
+![version](https://img.shields.io/badge/version-3.0.1-brightgreen)
 ![python](https://img.shields.io/badge/python-3.9%2B-blue)
 ![license](https://img.shields.io/badge/license-MIT-lightgrey)
 
