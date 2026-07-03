@@ -63,6 +63,10 @@ def _bypass_variants(url: str) -> list[str]:
     """
     if has_file_extension(url):
         return []
+    # Without a path segment these tricks are meaningless, and ";" would attach
+    # to the hostname (breaking DNS) rather than to a path component.
+    if not urlparse(url).path.strip("/"):
+        return []
     stem = url.rstrip("/")
     return [
         f"{stem}/.",       # trailing dot segment

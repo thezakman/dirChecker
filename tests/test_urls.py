@@ -1,3 +1,5 @@
+from urllib.parse import urlparse
+
 from dirchecker import urls
 
 
@@ -52,3 +54,15 @@ def test_expand_urls_bypass_variants():
 
 def test_bypass_variants_skip_files():
     assert urls._bypass_variants("http://x.com/a/file.txt") == []
+
+
+def test_bypass_variants_skip_root_host():
+    """Root URLs have no path segment; ';' must never touch the hostname."""
+    assert urls._bypass_variants("http://x.com/") == []
+    assert urls._bypass_variants("http://x.com") == []
+
+
+def test_expand_urls_bypass_never_corrupts_host():
+    for u in urls.expand_urls(["http://x.com/pdfs/"], bypass=True):
+        # The ';' path-param trick must stay in the path, not the netloc.
+        assert not urlparse(u).netloc.endswith(";")
