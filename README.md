@@ -9,9 +9,16 @@
               - why check manually?
 ```
 
+[![CI](https://github.com/thezakman/dirChecker/actions/workflows/ci.yml/badge.svg)](https://github.com/thezakman/dirChecker/actions/workflows/ci.yml)
 ![version](https://img.shields.io/badge/version-3.1.0-brightgreen)
 ![python](https://img.shields.io/badge/python-3.9%2B-blue)
 ![license](https://img.shields.io/badge/license-MIT-lightgrey)
+![platform](https://img.shields.io/badge/platform-linux%20%7C%20macos%20%7C%20windows-lightgrey)
+[![recorded with asciinema](https://img.shields.io/badge/demo-asciinema-d40000)](docs/demo.cast)
+
+<p align="center">
+  <img src="docs/demo.gif" alt="dirChecker finding a directory listing" width="760">
+</p>
 
 Recursive scanner that identifies **directory-listing vulnerabilities** on web
 servers and cloud storage buckets. Give it any URL and it walks every parent
