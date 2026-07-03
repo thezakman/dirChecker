@@ -17,7 +17,7 @@
 [![recorded with asciinema](https://img.shields.io/badge/demo-asciinema-d40000)](docs/demo.cast)
 
 <p align="center">
-  <img src="docs/demo.gif" alt="dirChecker finding a directory listing" width="760">
+  <img src="docs/demo.gif" alt="dirChecker climbing parent directories to find an exposed listing" width="640">
 </p>
 
 Recursive scanner that identifies **directory-listing vulnerabilities** on web
