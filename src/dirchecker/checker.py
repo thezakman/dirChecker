@@ -9,9 +9,11 @@ never writes to the console — presentation lives in
 from __future__ import annotations
 
 import logging
+import secrets
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Callable
+from urllib.parse import urljoin, urlparse
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -67,6 +69,9 @@ class DirectoryChecker:
         if self.config.custom_headers:
             session.headers.update(self.config.custom_headers)
 
+        if self.config.proxy:
+            session.proxies = {"http": self.config.proxy, "https": self.config.proxy}
+
         return session
 
     def close(self) -> None:
@@ -96,19 +101,26 @@ class DirectoryChecker:
 
         timeout = self._effective_timeout(url)
 
+        if self.config.delay > 0:
+            time.sleep(self.config.delay)
+
         try:
             # A cheap HEAD lets us bail out of large/binary payloads early.
-            try:
-                head = self.session.head(
-                    url, verify=self.config.verify_ssl, timeout=timeout, allow_redirects=True
-                )
-                if self._should_skip(head.headers):
-                    result.response = head
-                    result.skipped_content = True
-                    self.stats.successful_requests += 1
-                    return result
-            except requests.RequestException:
-                pass  # Fall through to GET.
+            if self.config.use_head:
+                try:
+                    head = self.session.head(
+                        url,
+                        verify=self.config.verify_ssl,
+                        timeout=timeout,
+                        allow_redirects=self.config.follow_redirects,
+                    )
+                    if self._should_skip(head.headers):
+                        result.response = head
+                        result.skipped_content = True
+                        self.stats.successful_requests += 1
+                        return result
+                except requests.RequestException:
+                    pass  # Fall through to GET.
 
             start = time.time()
             response = self._get(url, timeout)
@@ -155,15 +167,50 @@ class DirectoryChecker:
         return self.config.timeout
 
     def _get(self, url: str, timeout: int) -> requests.Response:
-        """Streamed GET that caps how much body we download for analysis."""
-        response = self.session.get(
-            url,
-            verify=self.config.verify_ssl,
-            timeout=timeout,
-            stream=True,
-            allow_redirects=True,
-        )
+        """Streamed GET that caps the downloaded body and follows redirects.
 
+        Redirects are resolved manually so we can enforce ``same_host_redirects``
+        (never leaving the original host) and cap the hop count ourselves.
+        """
+        origin_host = urlparse(url).netloc
+        history: list[requests.Response] = []
+        current = url
+        response = None
+
+        for _ in range(self.config.max_redirects + 1):
+            response = self.session.get(
+                current,
+                verify=self.config.verify_ssl,
+                timeout=timeout,
+                stream=True,
+                allow_redirects=False,
+            )
+
+            if not (self.config.follow_redirects and response.is_redirect):
+                break
+            location = response.headers.get("Location")
+            if not location:
+                break
+
+            next_url = urljoin(current, location)
+            if (
+                self.config.same_host_redirects
+                and urlparse(next_url).netloc != origin_host
+            ):
+                logger.debug("Not following off-host redirect %s -> %s", current, next_url)
+                break  # Report the redirect itself rather than leave scope.
+
+            history.append(response)
+            response.close()
+            current = next_url
+
+        self._read_body(response)
+        if history:
+            response.history = history
+        return response
+
+    def _read_body(self, response: requests.Response) -> None:
+        """Stream *response* into ``_content``, capping the download size."""
         chunks: list[bytes] = []
         total = 0
         try:
@@ -181,10 +228,8 @@ class DirectoryChecker:
                 text = raw.decode("latin-1", errors="replace")
             response._content = text.encode("utf-8", errors="replace")
         except Exception as exc:  # noqa: BLE001
-            logger.debug("Error reading content from %s: %s", url, exc)
+            logger.debug("Error reading content from %s: %s", response.url, exc)
             response._content = b""
-
-        return response
 
     @staticmethod
     def _should_skip(headers: dict[str, str]) -> bool:
@@ -206,6 +251,7 @@ class DirectoryChecker:
         self,
         seed_urls: list[str],
         double_slash: bool = False,
+        bypass: bool = False,
         on_result: ProgressCallback | None = None,
     ) -> list[CheckResult]:
         """Expand and concurrently probe *seed_urls*.
@@ -214,8 +260,10 @@ class DirectoryChecker:
         enabling live progress display without coupling to a UI library.
         """
         self.stats.reset()
-        targets = urls.expand_urls(seed_urls, double_slash)
+        targets = urls.expand_urls(seed_urls, double_slash, bypass)
         self.stats.total_urls = len(targets)
+
+        catch_all_hosts = self._catch_all_hosts(targets)
 
         results: list[CheckResult] = []
         with ThreadPoolExecutor(max_workers=self.config.max_threads) as executor:
@@ -227,8 +275,45 @@ class DirectoryChecker:
                 except Exception as exc:  # noqa: BLE001
                     logger.debug("Error scanning %s: %s", url, exc)
                     result = CheckResult(url=url, depth=urls.url_depth(url), error=str(exc))
+                self._apply_baseline(result, catch_all_hosts)
                 results.append(result)
                 if on_result is not None:
                     on_result(result)
 
         return results
+
+    # -- Baseline / catch-all detection -----------------------------------
+
+    def _catch_all_hosts(self, targets: list[str]) -> set[str]:
+        """Return hosts that flag a random, non-existent path as a listing.
+
+        Such a host answers ``200`` (and looks browsable) for *anything*, so
+        its per-URL "listing" verdicts are almost certainly false positives.
+        """
+        if not self.config.baseline_check:
+            return set()
+
+        hosts: dict[str, str] = {}
+        for target in targets:
+            parsed = urlparse(target)
+            hosts.setdefault(parsed.netloc, f"{parsed.scheme}://{parsed.netloc}")
+
+        catch_all: set[str] = set()
+        for netloc, base in hosts.items():
+            probe = f"{base}/dirchecker-baseline-{secrets.token_hex(8)}/"
+            try:
+                response = self._get(probe, self._effective_timeout(probe))
+                if response.status_code == 200 and detector.is_directory_listing(response):
+                    catch_all.add(netloc)
+                    logger.debug("Host %s looks like a catch-all; suppressing listings", netloc)
+            except requests.RequestException as exc:
+                logger.debug("Baseline probe failed for %s: %s", netloc, exc)
+        return catch_all
+
+    def _apply_baseline(self, result: CheckResult, catch_all_hosts: set[str]) -> None:
+        if not result.is_listing:
+            return
+        if urlparse(result.url).netloc in catch_all_hosts:
+            result.is_listing = False
+            result.note = "suppressed: host flags a random baseline path too (likely catch-all)"
+            self.stats.vulnerable_urls -= 1

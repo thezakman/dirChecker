@@ -53,6 +53,25 @@ def _directory_variants(url: str, double_slash: bool) -> list[str]:
     return variants
 
 
+def _bypass_variants(url: str) -> list[str]:
+    """Path-normalisation tricks that sometimes re-expose a disabled autoindex.
+
+    These target servers/proxies that normalise the request path differently
+    from the auth/routing layer (Apache, Nginx, Tomcat, various WAFs). Only
+    generated for directory-like URLs and only when the user opts in, since
+    they multiply the request count.
+    """
+    if has_file_extension(url):
+        return []
+    stem = url.rstrip("/")
+    return [
+        f"{stem}/.",       # trailing dot segment
+        f"{stem}/%2e/",    # URL-encoded dot
+        f"{stem};/",       # path parameter separator
+        f"{stem}/..;/",    # Tomcat-style path traversal artefact
+    ]
+
+
 def _parent_directories(url: str, double_slash: bool) -> list[str]:
     """Every ancestor directory of ``url`` up to (and including) the root."""
     parsed = urlparse(url)
@@ -78,12 +97,15 @@ def _parent_directories(url: str, double_slash: bool) -> list[str]:
     return variants
 
 
-def expand_urls(urls: list[str], double_slash: bool = False) -> list[str]:
+def expand_urls(
+    urls: list[str], double_slash: bool = False, bypass: bool = False
+) -> list[str]:
     """Expand seed URLs into the full ordered set of paths to probe.
 
     For each input we add the URL itself, directory variants, and the whole
-    chain of parent directories. Results are de-duplicated and ordered with
-    the deepest paths first for a more intuitive scan progression.
+    chain of parent directories. When ``bypass`` is set we also add path
+    normalisation tricks for each directory. Results are de-duplicated and
+    ordered with the deepest paths first for a more intuitive scan progression.
     """
     seen: set[str] = set()
     ordered: list[str] = []
@@ -100,6 +122,12 @@ def expand_urls(urls: list[str], double_slash: bool = False) -> list[str]:
             add(variant)
         for variant in _parent_directories(normalized, double_slash):
             add(variant)
+        if bypass:
+            for variant in _bypass_variants(normalized):
+                add(variant)
+            for parent in _parent_directories(normalized, False):
+                for variant in _bypass_variants(parent):
+                    add(variant)
 
     return sorted(ordered, key=lambda u: (-url_depth(u), u))
 

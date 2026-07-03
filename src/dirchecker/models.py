@@ -24,6 +24,21 @@ class CheckerConfig:
     max_content_size: int = 100_000
     verbose: bool = False
 
+    # Route all traffic through an HTTP/HTTPS proxy (e.g. "http://127.0.0.1:8080").
+    proxy: str | None = None
+    # Seconds to sleep before each request (per worker) to throttle scanning.
+    delay: float = 0.0
+    # Send a cheap HEAD before GET to bail out of large/binary payloads early.
+    use_head: bool = True
+    # Follow HTTP redirects; when off, a redirect is reported as-is.
+    follow_redirects: bool = True
+    # When following redirects, refuse to leave the original host (scope safety).
+    same_host_redirects: bool = False
+    # Upper bound on redirect hops we will follow for a single URL.
+    max_redirects: int = 10
+    # Probe a random path per host first; suppress listings on catch-all servers.
+    baseline_check: bool = True
+
     def __post_init__(self) -> None:
         self.max_threads = max(1, min(self.max_threads, self.THREAD_LIMIT))
 
@@ -40,6 +55,8 @@ class CheckResult:
     skipped_content: bool = False
     elapsed_time: float = 0.0
     response: requests.Response | None = None
+    # Free-form annotation, e.g. why a listing was suppressed as a false positive.
+    note: str | None = None
 
     @property
     def status_code(self) -> int | None:

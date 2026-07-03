@@ -38,6 +38,24 @@ def test_s3_bucket_listing():
     assert detector.is_directory_listing(resp)
 
 
+def test_s3_compatible_listing_on_any_host():
+    """A MinIO/DigitalOcean/Backblaze bucket uses the same XML on any domain."""
+    body = (
+        "<ListBucketResult><CommonPrefixes><Prefix>x/</Prefix></CommonPrefixes>"
+        "</ListBucketResult>"
+    )
+    resp = _response(body, url="http://files.example.com/",
+                     headers={"Content-Type": "application/xml"})
+    assert detector.is_directory_listing(resp)
+
+
+def test_azure_blob_listing():
+    body = "<EnumerationResults><Blobs><Blob><Name>a</Name></Blob></Blobs></EnumerationResults>"
+    resp = _response(body, url="http://acct.blob.core.windows.net/c/",
+                     headers={"Content-Type": "application/xml"})
+    assert detector.is_directory_listing(resp)
+
+
 def test_json_listing():
     body = '{"objects": ["a", "b"]}'
     resp = _response(body, headers={"Content-Type": "application/json"})

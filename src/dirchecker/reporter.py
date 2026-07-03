@@ -66,12 +66,13 @@ class Reporter:
         checker: DirectoryChecker,
         seed_urls: list[str],
         double_slash: bool = False,
+        bypass: bool = False,
     ) -> list[CheckResult]:
         """Run a scan, showing a progress bar unless in silent mode."""
         if self.silent:
-            results = checker.scan(seed_urls, double_slash=double_slash)
+            results = checker.scan(seed_urls, double_slash=double_slash, bypass=bypass)
         else:
-            total = len(urls.expand_urls(seed_urls, double_slash))
+            total = len(urls.expand_urls(seed_urls, double_slash, bypass))
             with Progress(
                 TextColumn("[bold blue]{task.description}"),
                 BarColumn(bar_width=40),
@@ -84,7 +85,9 @@ class Reporter:
                 def advance(result: CheckResult) -> None:
                     progress.update(task, advance=1, url=result.url)
 
-                results = checker.scan(seed_urls, double_slash=double_slash, on_result=advance)
+                results = checker.scan(
+                    seed_urls, double_slash=double_slash, bypass=bypass, on_result=advance
+                )
 
         self.report(results, checker.stats)
         return results
@@ -160,6 +163,9 @@ class Reporter:
             listing = f"🔒 {Fore.CYAN}[Directory Listing]{Style.RESET_ALL}: {Fore.GREEN}(DISABLED){Style.RESET_ALL}"
         print(listing)
         print(f"📄 {Fore.CYAN}[Content-Type]{Style.RESET_ALL}: {Fore.WHITE}{result.content_type}{Style.RESET_ALL}")
+
+        if result.note:
+            print(f"ℹ️ {Fore.CYAN}[Note]{Style.RESET_ALL}: {Fore.WHITE}{result.note}{Style.RESET_ALL}")
 
         if self.verbose:
             self._print_verbose(result)

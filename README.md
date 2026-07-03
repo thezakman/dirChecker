@@ -9,7 +9,7 @@
               - why check manually?
 ```
 
-![version](https://img.shields.io/badge/version-3.0.1-brightgreen)
+![version](https://img.shields.io/badge/version-3.1.0-brightgreen)
 ![python](https://img.shields.io/badge/python-3.9%2B-blue)
 ![license](https://img.shields.io/badge/license-MIT-lightgrey)
 
@@ -17,6 +17,21 @@ Recursive scanner that identifies **directory-listing vulnerabilities** on web
 servers and cloud storage buckets. Give it any URL and it walks every parent
 directory, fingerprints the response, and reports which paths leak a browsable
 index.
+
+## What's new in v3.1
+
+- **Structured output**: `--format json|jsonl|csv` and `-o/--output` for pipelines
+- **Meaningful exit codes**: `2` when a listing is found (CI/pipeline friendly)
+- **Stdin input**: `cat urls.txt | dirchecker -`
+- **Proxy support** (`-x/--proxy`) and **request throttling** (`-d/--delay`)
+- **Scope safety**: `--same-host` refuses redirects that leave the target host;
+  `--no-redirects` to disable following entirely
+- **Catch-all / soft-200 detection**: a per-host baseline probe suppresses
+  listings on servers that answer `200` for any path (`--no-baseline` to opt out)
+- **Broader bucket coverage**: signature-based detection now catches DigitalOcean
+  Spaces, Backblaze B2, Alibaba OSS and self-hosted MinIO/Ceph, not just AWS/GCS/Azure
+- **More bypass variants** (`-bp/--bypass`): `/.`, `/%2e/`, `;/`, `/..;/`
+- **`--no-head`** to skip the pre-flight HEAD request
 
 ## What's new in v3
 
@@ -79,6 +94,8 @@ dirchecker [-h] [--version] [-u URL] [-l LIST] [-to TIMEOUT] [-vs]
 | `-u, --url-flag` | URL to check (alternative to positional) |
 | `-l, --list` | File containing a list of URLs |
 
+Both `url` and `-l/--list` accept `-` to read newline-separated targets from stdin.
+
 ### Request options
 | Flag | Description |
 |------|-------------|
@@ -88,15 +105,32 @@ dirchecker [-h] [--version] [-u URL] [-l LIST] [-to TIMEOUT] [-vs]
 | `-H, --headers` | Custom headers (`Header1:Value1,Header2:Value2`) |
 | `-t, --threads` | Concurrent threads (default: 10, max: 50) |
 | `-ds, --double-slash` | Test `//` bypass variants |
+| `-bp, --bypass` | Test path-normalisation autoindex bypass variants (`/.`, `/%2e/`, `;/`, `/..;/`) |
+| `-x, --proxy` | Route traffic through a proxy (e.g. `http://127.0.0.1:8080`) |
+| `-d, --delay` | Seconds to sleep before each request (throttle) |
+| `--no-head` | Skip the pre-flight HEAD request |
+| `--no-redirects` | Do not follow HTTP redirects |
+| `--same-host` | Follow redirects only while they stay on the original host |
+| `--no-baseline` | Disable catch-all / soft-200 baseline probing |
 
 ### Output options
 | Flag | Description |
 |------|-------------|
-| `-slt, --silent` | Print only vulnerable URLs |
+| `-f, --format` | Output format: `text` (default), `json`, `jsonl`, `csv` |
+| `-o, --output` | Write structured output to a file (requires `-f json\|jsonl\|csv`) |
+| `-slt, --silent` | Only vulnerable URLs (also filters structured output) |
 | `-v, --verbose` | Detailed output for every URL |
 | `-p, --preview` | Show a response body preview |
 | `-s, --status` | Show summary statistics |
 | `--debug` | Enable debug logging |
+
+### Exit codes
+| Code | Meaning |
+|------|---------|
+| `0` | Scan completed, no directory listing found |
+| `2` | At least one directory listing was found |
+| `1` | Unexpected error |
+| `130` | Interrupted (Ctrl-C) |
 
 ## Examples
 
@@ -118,6 +152,21 @@ dirchecker https://example.com/path/ -v -p -s
 
 # Custom headers
 dirchecker https://example.com/ -H "Authorization:Bearer token,X-Custom:Value"
+
+# Read targets from stdin, emit JSON Lines, only listings
+cat urls.txt | dirchecker - -f jsonl -slt
+
+# Machine-readable report to a file
+dirchecker -l urls.txt -f json -o results.json
+
+# Autoindex bypass attempts, throttled, through Burp
+dirchecker https://example.com/admin/ -bp -d 0.3 -x http://127.0.0.1:8080
+
+# Stay in scope: never follow a redirect off the original host
+dirchecker https://example.com/ --same-host
+
+# Gate a pipeline on the exit code (2 == found)
+dirchecker https://example.com/ -slt && echo "clean" || echo "listing found"
 ```
 
 ## Library usage
@@ -149,6 +198,7 @@ src/dirchecker/
 ├── checker.py      # concurrent HTTP probing engine
 ├── detector.py     # listing-detection heuristics (no I/O)
 ├── reporter.py     # console presentation layer
+├── output.py       # json / jsonl / csv serialisation
 ├── urls.py         # URL normalisation & variant generation
 ├── patterns.py     # detection signatures
 └── models.py       # typed config / result / stats

@@ -15,6 +15,7 @@ from .__about__ import __author__, __license__, __url__, __version__
 from .checker import DirectoryChecker
 from .detector import is_directory_listing
 from .models import CheckerConfig, CheckResult, ScanStats
+from .output import serialize
 
 __all__ = [
     "DirectoryChecker",
@@ -22,6 +23,7 @@ __all__ = [
     "CheckResult",
     "ScanStats",
     "is_directory_listing",
+    "serialize",
     "__version__",
     "__author__",
     "__license__",

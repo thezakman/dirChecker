@@ -45,22 +45,25 @@ def _has_obvious_pattern(body: str) -> bool:
 
 
 def _is_cloud_storage_listing(response: requests.Response, body: str) -> bool:
-    """Detect AWS S3 / GCS / Azure Blob bucket listings."""
-    url = response.url
-    status = response.status_code
+    """Detect object-storage bucket listings by their XML signature.
 
-    if "amazonaws.com" in url and status == 200 and "<listbucketresult" in body:
-        return "<contents>" in body or "<commonprefixes>" in body
+    ``<ListBucketResult>`` and ``<EnumerationResults>`` are unambiguous root
+    elements, so we key off the payload rather than the host. This covers AWS
+    S3, Google Cloud Storage, DigitalOcean Spaces, Backblaze B2, Alibaba OSS,
+    self-hosted MinIO/Ceph and Azure Blob without an allow-list of domains.
+    """
+    if response.status_code != 200:
+        return False
 
-    if "storage.googleapis.com" in url and status == 200:
-        content_type = response.headers.get("Content-Type", "").lower()
-        if ("xml" in content_type) and "<listbucketresult" in body:
-            has_contents = "<contents>" in body
-            has_prefixes = "<commonprefixes>" in body
-            has_keys = "<key>" in body and len(response.text) > 500
-            return has_contents or has_prefixes or has_keys
+    # S3-compatible object storage (AWS and every S3 API clone).
+    if "<listbucketresult" in body:
+        has_contents = "<contents>" in body
+        has_prefixes = "<commonprefixes>" in body
+        has_keys = "<key>" in body and len(response.text) > 500
+        return has_contents or has_prefixes or has_keys
 
-    if "blob.core.windows.net" in url and status == 200 and "<enumerationresults" in body:
+    # Azure Blob storage.
+    if "<enumerationresults" in body:
         return "<blobs>" in body or "<blobprefix>" in body
 
     return False

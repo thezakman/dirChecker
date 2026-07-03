@@ -40,3 +40,15 @@ def test_expand_urls_generates_parents_and_is_deduped():
 def test_expand_urls_double_slash_variants():
     out = urls.expand_urls(["http://x.com/a/"], double_slash=True)
     assert any(urls.has_double_slash(u) for u in out)
+
+
+def test_expand_urls_bypass_variants():
+    out = urls.expand_urls(["http://x.com/a/"], bypass=True)
+    assert "http://x.com/a/." in out
+    assert "http://x.com/a/%2e/" in out
+    assert "http://x.com/a;/" in out
+    assert len(out) == len(set(out))
+
+
+def test_bypass_variants_skip_files():
+    assert urls._bypass_variants("http://x.com/a/file.txt") == []
